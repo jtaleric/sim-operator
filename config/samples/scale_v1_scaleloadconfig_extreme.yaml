@@ -1,0 +1,112 @@
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: extreme-load
+spec:
+  enabled: true
+  
+  # Target KWOK nodes
+  kwokNodeSelector:
+    type: "kwok"
+  
+  # Extreme load profile for stress testing
+  loadProfile:
+    profile: "extreme"
+    namespacesPerNode: 1.0  # Heavy load - 1 namespace per node
+    resourcesPerNamespace: 10  # High resource density
+    apiCallRate: 50  # High API call frequency
+  
+  # Namespace configuration
+  namespaceConfig:
+    namespacePrefix: "extreme-fake-"
+    labels:
+      scale.openshift.io/load-test: "true"
+      environment: "extreme-simulation"
+    annotations:
+      scale.openshift.io/description: "High-load stress test namespace"
+      scale.openshift.io/stress-test: "true"
+  
+  # Aggressive annotation churn
+  annotationChurn:
+    enabled: true
+    networkingAnnotations: true
+    machineConfigAnnotations: true
+    updateIntervalMin: 30    # 30 seconds minimum
+    updateIntervalMax: 120   # 2 minutes maximum
+  
+  # Aggressive resource churn patterns
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 3
+      updateFrequencyMin: 60   # 1 minute
+      updateFrequencyMax: 300  # 5 minutes
+      deleteRecreateChance: 0.2
+    
+    secrets:
+      enabled: true
+      count: 2
+      updateFrequencyMin: 120  # 2 minutes
+      updateFrequencyMax: 600  # 10 minutes
+      deleteRecreateChance: 0.15
+    
+    routes:
+      enabled: true
+      count: 2
+      updateFrequencyMin: 180  # 3 minutes
+      updateFrequencyMax: 600  # 10 minutes
+      deleteRecreateChance: 0.1
+    
+    imageStreams:
+      enabled: true
+      count: 2
+      updateFrequencyMin: 600  # 10 minutes
+      updateFrequencyMax: 1800 # 30 minutes
+      deleteRecreateChance: 0.05
+    
+    buildConfigs:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 900  # 15 minutes
+      updateFrequencyMax: 2700 # 45 minutes
+      deleteRecreateChance: 0.05
+    
+    events:
+      enabled: true
+      eventsPerNodePerHour: 200  # Very high event generation
+      eventTypes:
+      - type: "Normal"
+        reason: "Started"
+        message: "Container started successfully"
+        weight: 25
+      - type: "Normal"
+        reason: "Created"
+        message: "Created container %s"
+        weight: 20
+      - type: "Warning"
+        reason: "FailedMount"
+        message: "Unable to mount volumes for pod %s"
+        weight: 15
+      - type: "Warning"
+        reason: "FailedScheduling"
+        message: "Pod scheduling failed: %s"
+        weight: 15
+      - type: "Warning"
+        reason: "BackOff"
+        message: "Back-off restarting failed container"
+        weight: 10
+      - type: "Normal"
+        reason: "Killing"
+        message: "Stopping container %s"
+        weight: 10
+      - type: "Warning"
+        reason: "Unhealthy"
+        message: "Readiness probe failed"
+        weight: 5
+  
+  # Standard cleanup but with minimal delay for stress testing
+  cleanupConfig:
+    enabled: true
+    gracefulDeletes: true
+    cleanupDelaySeconds: 30
+    orphanCleanup: true

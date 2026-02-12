@@ -1,0 +1,580 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  name: scaleloadconfigs.scale.openshift.io
+spec:
+  group: scale.openshift.io
+  names:
+    kind: ScaleLoadConfig
+    listKind: ScaleLoadConfigList
+    plural: scaleloadconfigs
+    singular: scaleloadconfig
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.kwokNodeCount
+      name: KWOK Nodes
+      type: integer
+    - jsonPath: .status.generatedNamespaces
+      name: Namespaces
+      type: integer
+    - jsonPath: .spec.loadProfile.profile
+      name: Profile
+      type: string
+    - jsonPath: .spec.enabled
+      name: Enabled
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: ScaleLoadConfig is the Schema for the scaleloadconfigs API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ScaleLoadConfigSpec defines the desired state of ScaleLoadConfig
+            properties:
+              annotationChurn:
+                description: AnnotationChurn controls node annotation update patterns
+                properties:
+                  enabled:
+                    default: true
+                    description: Enabled controls whether annotation churn is active
+                    type: boolean
+                  machineConfigAnnotations:
+                    default: true
+                    description: MachineConfigAnnotations simulates machine config
+                      annotation churn
+                    type: boolean
+                  networkingAnnotations:
+                    default: true
+                    description: NetworkingAnnotations simulates OVN/networking annotation
+                      churn
+                    type: boolean
+                  updateIntervalMax:
+                    default: 300
+                    description: UpdateIntervalMax maximum interval between annotation
+                      updates (seconds)
+                    format: int32
+                    type: integer
+                  updateIntervalMin:
+                    default: 60
+                    description: UpdateIntervalMin minimum interval between annotation
+                      updates (seconds)
+                    format: int32
+                    type: integer
+                type: object
+              cleanupConfig:
+                description: CleanupConfig controls resource cleanup when KWOK nodes
+                  are removed
+                properties:
+                  cleanupDelaySeconds:
+                    default: 60
+                    description: CleanupDelaySeconds delay before starting cleanup
+                      after node removal
+                    format: int32
+                    type: integer
+                  enabled:
+                    default: true
+                    description: Enabled controls whether cleanup is performed
+                    type: boolean
+                  gracefulDeletes:
+                    default: true
+                    description: GracefulDeletes uses graceful deletion for resources
+                    type: boolean
+                  orphanCleanup:
+                    default: true
+                    description: OrphanCleanup removes resources for nodes that no
+                      longer exist
+                    type: boolean
+                type: object
+              enabled:
+                default: true
+                description: Enabled controls whether load generation is active
+                type: boolean
+              kwokNodeSelector:
+                additionalProperties:
+                  type: string
+                default:
+                  type: kwok
+                description: KwokNodeSelector defines labels to identify KWOK nodes
+                type: object
+              loadProfile:
+                description: LoadProfile defines the intensity and pattern of load
+                  generation
+                properties:
+                  apiCallRate:
+                    default: 20
+                    description: APICallRate controls the frequency of API operations
+                      (calls per minute per node)
+                    format: int32
+                    type: integer
+                  namespacesPerNode:
+                    default: "0.6"
+                    description: |-
+                      NamespacesPerNode controls namespace density (overrides profile defaults)
+                      Based on must-gather analysis: ~0.6 namespaces per node (72/126)
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  profile:
+                    default: production
+                    description: Profile selects predefined load patterns
+                    enum:
+                    - development
+                    - staging
+                    - production
+                    - extreme
+                    type: string
+                  resourcesPerNamespace:
+                    default: 5
+                    description: ResourcesPerNamespace controls resource density per
+                      namespace
+                    format: int32
+                    type: integer
+                type: object
+              namespaceConfig:
+                description: NamespaceConfig controls simulated namespace creation
+                  and resource density
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations to apply to generated namespaces
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels to apply to generated namespaces
+                    type: object
+                  namespacePrefix:
+                    default: openshift-fake-
+                    description: NamespacePrefix for generated namespaces
+                    type: string
+                  resourceQuota:
+                    description: ResourceQuota settings for generated namespaces
+                    properties:
+                      cpu:
+                        description: CPU limits (in millicores)
+                        type: string
+                      memory:
+                        description: Memory limits
+                        type: string
+                      pods:
+                        description: Pod count limits
+                        format: int32
+                        type: integer
+                      storage:
+                        description: Storage limits
+                        type: string
+                    type: object
+                type: object
+              resourceChurn:
+                description: ResourceChurn controls resource creation/update/deletion
+                  patterns
+                properties:
+                  buildConfigs:
+                    description: BuildConfigs controls BuildConfig resource patterns
+                    properties:
+                      count:
+                        default: 1
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.1"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether this resource type is
+                          generated
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 1800
+                        description: UpdateFrequencyMax maximum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 300
+                        description: UpdateFrequencyMin minimum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                    type: object
+                  configMaps:
+                    description: ConfigMaps controls ConfigMap resource patterns
+                    properties:
+                      count:
+                        default: 1
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.1"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether this resource type is
+                          generated
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 1800
+                        description: UpdateFrequencyMax maximum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 300
+                        description: UpdateFrequencyMin minimum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                    type: object
+                  events:
+                    description: Events controls Event generation patterns
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enabled controls whether events are generated
+                        type: boolean
+                      eventTypes:
+                        description: EventTypes defines types of events to generate
+                        items:
+                          description: EventTypeConfig defines configuration for specific
+                            event types
+                          properties:
+                            message:
+                              description: Message template for the event
+                              type: string
+                            reason:
+                              description: Reason for the event
+                              type: string
+                            type:
+                              description: Type of the event (e.g., "Normal", "Warning")
+                              type: string
+                            weight:
+                              description: Weight for random selection (higher = more
+                                frequent)
+                              format: int32
+                              type: integer
+                          required:
+                          - message
+                          - reason
+                          - type
+                          - weight
+                          type: object
+                        type: array
+                      eventsPerNodePerHour:
+                        default: 50
+                        description: EventsPerNodePerHour controls event generation
+                          rate
+                        format: int32
+                        type: integer
+                    type: object
+                  imageStreams:
+                    description: ImageStreams controls ImageStream resource patterns
+                    properties:
+                      count:
+                        default: 1
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.1"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether this resource type is
+                          generated
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 1800
+                        description: UpdateFrequencyMax maximum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 300
+                        description: UpdateFrequencyMin minimum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                    type: object
+                  routes:
+                    description: Routes controls Route resource patterns
+                    properties:
+                      count:
+                        default: 1
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.1"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether this resource type is
+                          generated
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 1800
+                        description: UpdateFrequencyMax maximum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 300
+                        description: UpdateFrequencyMin minimum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                    type: object
+                  secrets:
+                    description: Secrets controls Secret resource patterns
+                    properties:
+                      count:
+                        default: 1
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.1"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether this resource type is
+                          generated
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 1800
+                        description: UpdateFrequencyMax maximum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 300
+                        description: UpdateFrequencyMin minimum time between updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
+            required:
+            - annotationChurn
+            - cleanupConfig
+            - loadProfile
+            - namespaceConfig
+            - resourceChurn
+            type: object
+          status:
+            description: ScaleLoadConfigStatus defines the observed state of ScaleLoadConfig
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the load config state
+                items:
+                  description: "Condition contains details for one aspect of the current
+                    state of this API Resource.\n---\nThis struct is intended for
+                    direct use as an array at the field path .status.conditions.  For
+                    example,\n\n\n\ttype FooStatus struct{\n\t    // Represents the
+                    observations of a foo's current state.\n\t    // Known .status.conditions.type
+                    are: \"Available\", \"Progressing\", and \"Degraded\"\n\t    //
+                    +patchMergeKey=type\n\t    // +patchStrategy=merge\n\t    // +listType=map\n\t
+                    \   // +listMapKey=type\n\t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
+                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`\n\n\n\t
+                    \   // other fields\n\t}"
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        ---
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be
+                        useful (see .node.status.conditions), the ability to deconflict is important.
+                        The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              generatedNamespaces:
+                description: GeneratedNamespaces is the current count of generated
+                  namespaces
+                format: int32
+                type: integer
+              kwokNodeCount:
+                description: KwokNodeCount is the current count of KWOK nodes being
+                  managed
+                format: int32
+                type: integer
+              lastReconcileTime:
+                description: LastReconcileTime is the timestamp of the last successful
+                  reconcile
+                format: date-time
+                type: string
+              metrics:
+                description: Metrics contains performance metrics for the load generation
+                properties:
+                  apiCallsPerMinute:
+                    description: APICallsPerMinute current rate of API calls
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  averageReconcileTimeMs:
+                    description: AverageReconcileTime in milliseconds
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  errorRate:
+                    description: ErrorRate percentage of failed operations
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  resourceCreationRate:
+                    description: ResourceCreationRate resources created per minute
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  resourceDeletionRate:
+                    description: ResourceDeletionRate resources deleted per minute
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                  resourceUpdateRate:
+                    description: ResourceUpdateRate resources updated per minute
+                    pattern: ^[0-9]+(\.[0-9]+)?$
+                    type: string
+                required:
+                - apiCallsPerMinute
+                - averageReconcileTimeMs
+                - errorRate
+                - resourceCreationRate
+                - resourceDeletionRate
+                - resourceUpdateRate
+                type: object
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the most
+                  recently observed spec
+                format: int64
+                type: integer
+              totalResources:
+                description: TotalResources tracks counts of generated resources by
+                  type
+                properties:
+                  buildConfigs:
+                    description: BuildConfigs count
+                    format: int32
+                    type: integer
+                  configMaps:
+                    description: ConfigMaps count
+                    format: int32
+                    type: integer
+                  events:
+                    description: Events count (approximate, events may be auto-cleaned
+                      by Kubernetes)
+                    format: int32
+                    type: integer
+                  imageStreams:
+                    description: ImageStreams count
+                    format: int32
+                    type: integer
+                  routes:
+                    description: Routes count
+                    format: int32
+                    type: integer
+                  secrets:
+                    description: Secrets count
+                    format: int32
+                    type: integer
+                required:
+                - buildConfigs
+                - configMaps
+                - events
+                - imageStreams
+                - routes
+                - secrets
+                type: object
+            required:
+            - generatedNamespaces
+            - kwokNodeCount
+            - totalResources
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
