@@ -1,0 +1,17 @@
+namespace: sim-operator-system
+
+namePrefix: sim-operator-
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+
+commonLabels:
+  app.kubernetes.io/name: sim-operator
+  app.kubernetes.io/part-of: sim-operator
+
+images:
+- name: controller
+  newName: quay.io/jtaleric/sim-operator
+  newTag: latest

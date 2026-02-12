@@ -1,0 +1,107 @@
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: production-load
+spec:
+  enabled: true
+  
+  # Target KWOK nodes specifically
+  kwokNodeSelector:
+    type: "kwok"
+  
+  # Production load profile based on 120-node cluster analysis
+  loadProfile:
+    profile: "production"
+    namespacesPerNode: 0.6  # ~72 namespaces for 120 nodes
+    resourcesPerNamespace: 5  # ConfigMap + Secret + Route + ImageStream + BuildConfig
+    apiCallRate: 20  # API calls per minute per node
+  
+  # Namespace configuration
+  namespaceConfig:
+    namespacePrefix: "openshift-fake-"
+    labels:
+      scale.openshift.io/load-test: "true"
+      environment: "production-simulation"
+    annotations:
+      scale.openshift.io/description: "Generated namespace for production load simulation"
+  
+  # Realistic node annotation churn patterns
+  annotationChurn:
+    enabled: true
+    networkingAnnotations: true
+    machineConfigAnnotations: true
+    updateIntervalMin: 60    # 1 minute minimum
+    updateIntervalMax: 300   # 5 minutes maximum
+  
+  # Resource churn patterns based on OpenShift cluster analysis
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 300   # 5 minutes
+      updateFrequencyMax: 1800  # 30 minutes
+      deleteRecreateChance: 0.1
+    
+    secrets:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 600   # 10 minutes (secrets updated less frequently)
+      updateFrequencyMax: 3600  # 1 hour
+      deleteRecreateChance: 0.05
+    
+    routes:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 900   # 15 minutes
+      updateFrequencyMax: 1800  # 30 minutes
+      deleteRecreateChance: 0.05
+    
+    imageStreams:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 1800  # 30 minutes
+      updateFrequencyMax: 7200  # 2 hours
+      deleteRecreateChance: 0.02
+    
+    buildConfigs:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 3600  # 1 hour
+      updateFrequencyMax: 14400 # 4 hours
+      deleteRecreateChance: 0.02
+    
+    events:
+      enabled: true
+      eventsPerNodePerHour: 50  # Based on typical OpenShift cluster activity
+      eventTypes:
+      - type: "Normal"
+        reason: "Started"
+        message: "Container started successfully"
+        weight: 30
+      - type: "Normal"
+        reason: "Created"
+        message: "Created container %s"
+        weight: 25
+      - type: "Normal"
+        reason: "Pulled"
+        message: "Successfully pulled image"
+        weight: 20
+      - type: "Warning"
+        reason: "FailedMount"
+        message: "Unable to mount volumes for pod %s"
+        weight: 10
+      - type: "Warning"
+        reason: "FailedScheduling"
+        message: "Pod scheduling failed: %s"
+        weight: 8
+      - type: "Normal"
+        reason: "Scheduled"
+        message: "Successfully assigned pod %s"
+        weight: 7
+  
+  # Cleanup configuration
+  cleanupConfig:
+    enabled: true
+    gracefulDeletes: true
+    cleanupDelaySeconds: 60
+    orphanCleanup: true

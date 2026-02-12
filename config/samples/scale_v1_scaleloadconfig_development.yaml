@@ -1,0 +1,72 @@
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: development-load
+spec:
+  enabled: true
+  
+  # Target KWOK nodes
+  kwokNodeSelector:
+    type: "kwok"
+  
+  # Light development load profile
+  loadProfile:
+    profile: "development"
+    namespacesPerNode: 0.2  # Light load - ~24 namespaces for 120 nodes
+    resourcesPerNamespace: 3  # Reduced resource density
+    apiCallRate: 10  # Lower API call frequency
+  
+  # Namespace configuration
+  namespaceConfig:
+    namespacePrefix: "dev-fake-"
+    labels:
+      scale.openshift.io/load-test: "true"
+      environment: "development-simulation"
+  
+  # Reduced annotation churn for development
+  annotationChurn:
+    enabled: true
+    networkingAnnotations: true
+    machineConfigAnnotations: false  # Disable machine config churn in dev
+    updateIntervalMin: 300   # 5 minutes minimum
+    updateIntervalMax: 1800  # 30 minutes maximum
+  
+  # Lighter resource churn patterns
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 1800  # 30 minutes
+      updateFrequencyMax: 7200  # 2 hours
+      deleteRecreateChance: 0.05
+    
+    secrets:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 3600  # 1 hour
+      updateFrequencyMax: 14400 # 4 hours
+      deleteRecreateChance: 0.02
+    
+    routes:
+      enabled: false  # Disable routes in development
+    
+    imageStreams:
+      enabled: true
+      count: 1
+      updateFrequencyMin: 7200  # 2 hours
+      updateFrequencyMax: 28800 # 8 hours
+      deleteRecreateChance: 0.01
+    
+    buildConfigs:
+      enabled: false  # Disable build configs in development
+    
+    events:
+      enabled: true
+      eventsPerNodePerHour: 20  # Lower event generation
+  
+  # Quick cleanup for development
+  cleanupConfig:
+    enabled: true
+    gracefulDeletes: false  # Faster cleanup
+    cleanupDelaySeconds: 10
+    orphanCleanup: true
