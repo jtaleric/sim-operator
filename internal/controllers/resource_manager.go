@@ -13,6 +13,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -25,6 +26,13 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 
 	log := r.Log.WithName("resource-manager").WithValues("namespace", namespace)
 	resourceCounts := make(map[string]int)
+
+	// Verify namespace exists and is ready before creating any resources
+	ready, phase := r.checkNamespaceStatus(ctx, namespace)
+	if !ready {
+		log.V(1).Info("Namespace not ready for resource creation", "phase", phase)
+		return resourceCounts, fmt.Errorf("namespace %s is not ready (phase: %s)", namespace, phase)
+	}
 
 	// ResourcesPerNamespace configuration available but not used in current implementation
 	// resourcesPerNs := int32(5) // Default based on must-gather analysis
@@ -604,7 +612,7 @@ func generateSettingsJSON() string {
 }
 
 func generateRandomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	result := make([]byte, length)
 	for i := range result {
 		result[i] = charset[mathrand.Intn(len(charset))]
@@ -656,6 +664,30 @@ func selectWeightedEventType(events []scalev1.EventTypeConfig) scalev1.EventType
 
 	// Fallback to first event
 	return events[0]
+}
+
+// checkNamespaceStatus checks namespace existence and returns readiness status with phase info
+func (r *ScaleLoadConfigReconciler) checkNamespaceStatus(ctx context.Context, namespaceName string) (bool, string) {
+	namespace := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace); err != nil {
+		return false, "NotFound"
+	}
+	
+	// Consider namespace ready if it exists and doesn't have a terminating phase
+	phase := string(namespace.Status.Phase)
+	if phase == "" {
+		phase = "Unknown"
+	}
+	
+	// Namespace is ready if it's Active or if phase is empty (newly created)
+	ready := namespace.Status.Phase == corev1.NamespaceActive || namespace.Status.Phase == ""
+	return ready, phase
+}
+
+// isNamespaceReady checks if a namespace exists and is in Active phase  
+func (r *ScaleLoadConfigReconciler) isNamespaceReady(ctx context.Context, namespaceName string) bool {
+	ready, _ := r.checkNamespaceStatus(ctx, namespaceName)
+	return ready
 }
 
 // performResourceChurn simulates realistic resource update patterns

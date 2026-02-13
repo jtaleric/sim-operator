@@ -243,8 +243,20 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		currentNamespaceCount = targetNamespaces
 	}
 
+	// Get the current list of managed namespaces (including newly created ones)
+	currentNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to get current namespaces: %w", err)
+	}
+
 	// Manage resources within namespaces
-	for _, ns := range existingNamespaces {
+	for _, ns := range currentNamespaces {
+		// Check if namespace is ready before managing resources
+		if !r.isNamespaceReady(ctx, ns.Name) {
+			log.V(1).Info("Namespace not ready yet, skipping resource management", "namespace", ns.Name)
+			continue
+		}
+
 		if counts, err := r.manageNamespaceResources(ctx, config, ns.Name); err != nil {
 			log.Error(err, "Failed to manage namespace resources", "namespace", ns.Name)
 		} else {
@@ -492,3 +504,4 @@ func (r *ScaleLoadConfigReconciler) isKwokNode(obj client.Object) bool {
 
 	return false
 }
+
