@@ -301,7 +301,6 @@ func generateCSINodeID() string {
 	return fmt.Sprintf(`{"ebs.csi.aws.com":"i-%016x"}`, rand.Uint64())
 }
 
-
 func generateMachineReference(nodeName string) string {
 	// Extract some identifier from node name for consistency
 	suffix := nodeName[len(nodeName)-6:]
@@ -341,7 +340,7 @@ func (r *ScaleLoadConfigReconciler) updateNodeWithRetry(ctx context.Context, nod
 			}
 			return false, err // Other errors are not retryable
 		}
-		
+
 		return true, nil // Success
 	})
 }

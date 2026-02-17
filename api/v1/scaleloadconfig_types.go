@@ -134,6 +134,12 @@ type ResourceTypeConfig struct {
 	// +kubebuilder:default=1
 	Count int32 `json:"count,omitempty"`
 
+	// NamespaceInterval controls how often this resource is created relative to namespaces
+	// For example, interval=10 means create this resource in every 10th namespace
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	NamespaceInterval int32 `json:"namespaceInterval,omitempty"`
+
 	// UpdateFrequencyMin minimum time between updates (seconds)
 	// +kubebuilder:default=300
 	UpdateFrequencyMin int32 `json:"updateFrequencyMin,omitempty"`

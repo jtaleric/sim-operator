@@ -6,12 +6,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	mathrand "math/rand"
+	"strconv"
 	"time"
 
 	buildv1 "github.com/openshift/api/build/v1"
 	imagev1 "github.com/openshift/api/image/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -22,16 +24,16 @@ import (
 
 // manageNamespaceResources creates and manages resources within a namespace
 func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context,
-	config *scalev1.ScaleLoadConfig, namespace string) (map[string]int, error) {
+	config *scalev1.ScaleLoadConfig, namespace corev1.Namespace) (map[string]int, error) {
 
-	log := r.Log.WithName("resource-manager").WithValues("namespace", namespace)
+	log := r.Log.WithName("resource-manager").WithValues("namespace", namespace.Name)
 	resourceCounts := make(map[string]int)
 
 	// Verify namespace exists and is ready before creating any resources
-	ready, phase := r.checkNamespaceStatus(ctx, namespace)
+	ready, phase := r.checkNamespaceStatus(ctx, namespace.Name)
 	if !ready {
 		log.V(1).Info("Namespace not ready for resource creation", "phase", phase)
-		return resourceCounts, fmt.Errorf("namespace %s is not ready (phase: %s)", namespace, phase)
+		return resourceCounts, fmt.Errorf("namespace %s is not ready (phase: %s)", namespace.Name, phase)
 	}
 
 	// ResourcesPerNamespace configuration available but not used in current implementation
@@ -42,52 +44,65 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 
 	// Manage each resource type
 	if config.Spec.ResourceChurn.ConfigMaps.Enabled {
-		count, err := r.manageConfigMaps(ctx, config, namespace, config.Spec.ResourceChurn.ConfigMaps.Count)
-		if err != nil {
-			log.Error(err, "Failed to manage ConfigMaps")
-		} else {
-			resourceCounts["configMaps"] = int(count)
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ConfigMaps.NamespaceInterval) {
+			count, err := r.manageConfigMaps(ctx, config, namespace.Name, config.Spec.ResourceChurn.ConfigMaps.Count)
+			if err != nil {
+				log.Error(err, "Failed to manage ConfigMaps")
+			} else {
+				resourceCounts["configMaps"] = int(count)
+			}
 		}
 	}
 
 	if config.Spec.ResourceChurn.Secrets.Enabled {
-		count, err := r.manageSecrets(ctx, config, namespace, config.Spec.ResourceChurn.Secrets.Count)
-		if err != nil {
-			log.Error(err, "Failed to manage Secrets")
-		} else {
-			resourceCounts["secrets"] = int(count)
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Secrets.NamespaceInterval) {
+			count, err := r.manageSecrets(ctx, config, namespace.Name, config.Spec.ResourceChurn.Secrets.Count)
+			if err != nil {
+				log.Error(err, "Failed to manage Secrets")
+			} else {
+				resourceCounts["secrets"] = int(count)
+			}
 		}
 	}
 
 	if config.Spec.ResourceChurn.Routes.Enabled {
-		count, err := r.manageRoutes(ctx, config, namespace, config.Spec.ResourceChurn.Routes.Count)
-		if err != nil {
-			log.Error(err, "Failed to manage Routes")
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Routes.NamespaceInterval) {
+			count, err := r.manageRoutes(ctx, config, namespace.Name, config.Spec.ResourceChurn.Routes.Count)
+			if err != nil {
+				log.Error(err, "Failed to manage Routes")
+			} else {
+				resourceCounts["routes"] = int(count)
+			}
 		} else {
-			resourceCounts["routes"] = int(count)
+			log.V(2).Info("Skipping Routes creation based on namespace interval", "interval", config.Spec.ResourceChurn.Routes.NamespaceInterval)
 		}
 	}
 
 	if config.Spec.ResourceChurn.ImageStreams.Enabled {
-		count, err := r.manageImageStreams(ctx, config, namespace, config.Spec.ResourceChurn.ImageStreams.Count)
-		if err != nil {
-			log.Error(err, "Failed to manage ImageStreams")
-		} else {
-			resourceCounts["imageStreams"] = int(count)
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ImageStreams.NamespaceInterval) {
+			count, err := r.manageImageStreams(ctx, config, namespace.Name, config.Spec.ResourceChurn.ImageStreams.Count)
+			if err != nil {
+				log.Error(err, "Failed to manage ImageStreams")
+			} else {
+				resourceCounts["imageStreams"] = int(count)
+			}
 		}
 	}
 
 	if config.Spec.ResourceChurn.BuildConfigs.Enabled {
-		count, err := r.manageBuildConfigs(ctx, config, namespace, config.Spec.ResourceChurn.BuildConfigs.Count)
-		if err != nil {
-			log.Error(err, "Failed to manage BuildConfigs")
-		} else {
-			resourceCounts["buildConfigs"] = int(count)
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.BuildConfigs.NamespaceInterval) {
+			count, err := r.manageBuildConfigs(ctx, config, namespace.Name, config.Spec.ResourceChurn.BuildConfigs.Count)
+			if err != nil {
+				log.Error(err, "Failed to manage BuildConfigs")
+			} else {
+				resourceCounts["buildConfigs"] = int(count)
+			}
 		}
 	}
 
 	if config.Spec.ResourceChurn.Events.Enabled {
-		count, err := r.manageEvents(ctx, config, namespace)
+		// Events don't have namespace interval as they're not created per namespace in the same way
+		count, err := r.manageEvents(ctx, config, namespace.Name)
 		if err != nil {
 			log.Error(err, "Failed to manage Events")
 		} else {
@@ -96,6 +111,31 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 	}
 
 	return resourceCounts, nil
+}
+
+// shouldCreateResourceForNamespace checks if a resource should be created based on namespace interval
+func (r *ScaleLoadConfigReconciler) shouldCreateResourceForNamespace(namespace corev1.Namespace, interval int32) bool {
+	// Default to creating resource if no interval specified or interval is 1
+	if interval <= 1 {
+		return true
+	}
+
+	// Extract namespace index from labels
+	indexStr, exists := namespace.Labels["scale.openshift.io/namespace-index"]
+	if !exists {
+		// If no index label (for backwards compatibility), create the resource
+		return true
+	}
+
+	index, err := strconv.Atoi(indexStr)
+	if err != nil {
+		// If index is not parseable, default to creating the resource
+		return true
+	}
+
+	// Create resource only if namespace index is divisible by interval
+	// This creates resources in every Nth namespace (0, interval, 2*interval, etc.)
+	return index%int(interval) == 0
 }
 
 // manageConfigMaps creates and manages ConfigMap resources
@@ -272,6 +312,16 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
 		for i := int32(currentCount); i < targetCount; i++ {
+			// First create the Service that the Route will reference
+			service := r.generateService(config, namespace, i)
+			if err := r.Create(ctx, service); err != nil {
+				// Check if the service already exists
+				if !errors.IsAlreadyExists(err) {
+					return int32(currentCount), fmt.Errorf("failed to create Service: %w", err)
+				}
+			}
+
+			// Then create the Route
 			route := r.generateRoute(config, namespace, i)
 			if err := r.Create(ctx, route); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to create Route: %w", err)
@@ -282,8 +332,24 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		for i := int32(len(routeList.Items)) - 1; i >= targetCount; i-- {
+			// Delete the Route first
 			if err := r.Delete(ctx, &routeList.Items[i]); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to delete Route: %w", err)
+			}
+
+			// Then delete the corresponding Service
+			serviceName := fmt.Sprintf("load-service-%d", i)
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName,
+					Namespace: namespace,
+				},
+			}
+			if err := r.Delete(ctx, service); err != nil {
+				// Log the error but don't fail the operation if the service doesn't exist
+				if !errors.IsNotFound(err) {
+					return int32(currentCount), fmt.Errorf("failed to delete Service: %w", err)
+				}
 			}
 		}
 	}
@@ -319,6 +385,39 @@ func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfi
 			TLS: &routev1.TLSConfig{
 				Termination: routev1.TLSTerminationEdge,
 			},
+		},
+	}
+}
+
+// generateService creates a Service resource for the Route to reference
+func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadConfig, namespace string, index int32) *corev1.Service {
+	name := fmt.Sprintf("load-service-%d", index)
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"scale.openshift.io/managed-by":    config.Name,
+				"scale.openshift.io/resource-type": "service",
+				"scale.openshift.io/created-by":    "sim-operator",
+				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/component":      "backend",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app.kubernetes.io/name": fmt.Sprintf("load-app-%d", index),
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Port:       8080,
+					TargetPort: intstr.FromInt(8080),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+			Type: corev1.ServiceTypeClusterIP,
 		},
 	}
 }
@@ -672,19 +771,19 @@ func (r *ScaleLoadConfigReconciler) checkNamespaceStatus(ctx context.Context, na
 	if err := r.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace); err != nil {
 		return false, "NotFound"
 	}
-	
+
 	// Consider namespace ready if it exists and doesn't have a terminating phase
 	phase := string(namespace.Status.Phase)
 	if phase == "" {
 		phase = "Unknown"
 	}
-	
+
 	// Namespace is ready if it's Active or if phase is empty (newly created)
 	ready := namespace.Status.Phase == corev1.NamespaceActive || namespace.Status.Phase == ""
 	return ready, phase
 }
 
-// isNamespaceReady checks if a namespace exists and is in Active phase  
+// isNamespaceReady checks if a namespace exists and is in Active phase
 func (r *ScaleLoadConfigReconciler) isNamespaceReady(ctx context.Context, namespaceName string) bool {
 	ready, _ := r.checkNamespaceStatus(ctx, namespaceName)
 	return ready
