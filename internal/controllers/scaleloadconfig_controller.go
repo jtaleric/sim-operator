@@ -243,9 +243,21 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		currentNamespaceCount = targetNamespaces
 	}
 
+	// Get the current list of managed namespaces (including newly created ones)
+	currentNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to get current namespaces: %w", err)
+	}
+
 	// Manage resources within namespaces
-	for _, ns := range existingNamespaces {
-		if counts, err := r.manageNamespaceResources(ctx, config, ns.Name); err != nil {
+	for _, ns := range currentNamespaces {
+		// Check if namespace is ready before managing resources
+		if !r.isNamespaceReady(ctx, ns.Name) {
+			log.V(1).Info("Namespace not ready yet, skipping resource management", "namespace", ns.Name)
+			continue
+		}
+
+		if counts, err := r.manageNamespaceResources(ctx, config, ns); err != nil {
 			log.Error(err, "Failed to manage namespace resources", "namespace", ns.Name)
 		} else {
 			// Aggregate resource counts
@@ -287,6 +299,13 @@ func (r *ScaleLoadConfigReconciler) createNamespaces(ctx context.Context, config
 		prefix = "openshift-fake-"
 	}
 
+	// Get current namespace count to continue indexing sequence
+	existingNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return fmt.Errorf("failed to get existing namespaces for indexing: %w", err)
+	}
+	startIndex := len(existingNamespaces)
+
 	for i := 0; i < count; i++ {
 		// Generate unique namespace name
 		namespaceName := fmt.Sprintf("%s%s-%d", prefix, generateRandomString(6), time.Now().Unix()%10000)
@@ -304,6 +323,7 @@ func (r *ScaleLoadConfigReconciler) createNamespaces(ctx context.Context, config
 					"scale.openshift.io/managed-by":      config.Name,
 					"scale.openshift.io/associated-node": associatedNode,
 					"scale.openshift.io/created-by":      "sim-operator",
+					"scale.openshift.io/namespace-index": fmt.Sprintf("%d", startIndex+i),
 				},
 			},
 		}

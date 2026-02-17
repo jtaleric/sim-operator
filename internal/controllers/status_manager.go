@@ -22,18 +22,25 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 
 	log := r.Log.WithName("status-manager")
 
-	// Calculate metrics
-	metrics := r.calculateMetrics(config, kwokNodeCount, namespaceCount, resourceCounts)
+	// Get the latest version of the resource to avoid conflicts
+	latestConfig := &scalev1.ScaleLoadConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, latestConfig); err != nil {
+		log.Error(err, "Failed to fetch latest ScaleLoadConfig for status update")
+		return ctrl.Result{}, err
+	}
 
-	// Update status
-	config.Status.ObservedGeneration = config.Generation
-	config.Status.KwokNodeCount = int32(kwokNodeCount)
-	config.Status.GeneratedNamespaces = int32(namespaceCount)
-	config.Status.LastReconcileTime = &metav1.Time{Time: time.Now()}
-	config.Status.Metrics = metrics
+	// Calculate metrics
+	metrics := r.calculateMetrics(latestConfig, kwokNodeCount, namespaceCount, resourceCounts)
+
+	// Update status on the latest version
+	latestConfig.Status.ObservedGeneration = latestConfig.Generation
+	latestConfig.Status.KwokNodeCount = int32(kwokNodeCount)
+	latestConfig.Status.GeneratedNamespaces = int32(namespaceCount)
+	latestConfig.Status.LastReconcileTime = &metav1.Time{Time: time.Now()}
+	latestConfig.Status.Metrics = metrics
 
 	// Update resource counts
-	config.Status.TotalResources = scalev1.ResourceCounts{
+	latestConfig.Status.TotalResources = scalev1.ResourceCounts{
 		ConfigMaps:   int32(resourceCounts["configMaps"]),
 		Secrets:      int32(resourceCounts["secrets"]),
 		Routes:       int32(resourceCounts["routes"]),
@@ -43,12 +50,12 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	}
 
 	// Update conditions
-	config.Status.Conditions = r.updateConditions(config, kwokNodeCount)
+	latestConfig.Status.Conditions = r.updateConditions(latestConfig, kwokNodeCount)
 
 	// Update Prometheus metrics
-	r.updatePrometheusMetrics(config)
+	r.updatePrometheusMetrics(latestConfig)
 
-	if err := r.Status().Update(ctx, config); err != nil {
+	if err := r.Status().Update(ctx, latestConfig); err != nil {
 		log.Error(err, "Failed to update ScaleLoadConfig status")
 		return ctrl.Result{}, err
 	}

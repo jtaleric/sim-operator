@@ -212,6 +212,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often this resource is created relative to namespaces
+                          For example, interval=10 means create this resource in every 10th namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
                       updateFrequencyMax:
                         default: 1800
                         description: UpdateFrequencyMax maximum time between updates
@@ -244,6 +252,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often this resource is created relative to namespaces
+                          For example, interval=10 means create this resource in every 10th namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
                       updateFrequencyMax:
                         default: 1800
                         description: UpdateFrequencyMax maximum time between updates
@@ -317,6 +333,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often this resource is created relative to namespaces
+                          For example, interval=10 means create this resource in every 10th namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
                       updateFrequencyMax:
                         default: 1800
                         description: UpdateFrequencyMax maximum time between updates
@@ -349,6 +373,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often this resource is created relative to namespaces
+                          For example, interval=10 means create this resource in every 10th namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
                       updateFrequencyMax:
                         default: 1800
                         description: UpdateFrequencyMax maximum time between updates
@@ -381,6 +413,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often this resource is created relative to namespaces
+                          For example, interval=10 means create this resource in every 10th namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
                       updateFrequencyMax:
                         default: 1800
                         description: UpdateFrequencyMax maximum time between updates

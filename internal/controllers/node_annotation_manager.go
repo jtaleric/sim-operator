@@ -7,6 +7,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	scalev1 "github.com/jtaleric/sim-operator/api/v1"
 )
@@ -52,7 +55,7 @@ func (r *ScaleLoadConfigReconciler) updateNodeAnnotations(ctx context.Context,
 		}
 
 		if updated {
-			if err := r.Update(ctx, nodeToUpdate); err != nil {
+			if err := r.updateNodeWithRetry(ctx, node.Name, nodeToUpdate); err != nil {
 				log.Error(err, "Failed to update node annotations", "node", node.Name)
 				continue
 			}
@@ -303,4 +306,41 @@ func generateMachineReference(nodeName string) string {
 	suffix := nodeName[len(nodeName)-6:]
 	return fmt.Sprintf("openshift-machine-api/ci-op-%s-worker-us-west-2a-%s",
 		generateRandomString(6), suffix)
+}
+
+// updateNodeWithRetry implements retry logic with exponential backoff for node updates
+func (r *ScaleLoadConfigReconciler) updateNodeWithRetry(ctx context.Context, nodeName string, nodeUpdate *corev1.Node) error {
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	return wait.ExponentialBackoff(backoff, func() (bool, error) {
+		// Get the latest version of the node
+		var currentNode corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &currentNode); err != nil {
+			return false, err
+		}
+
+		// Apply the annotation updates to the current version
+		if currentNode.Annotations == nil {
+			currentNode.Annotations = make(map[string]string)
+		}
+		for k, v := range nodeUpdate.Annotations {
+			currentNode.Annotations[k] = v
+		}
+
+		// Attempt the update
+		if err := r.Update(ctx, &currentNode); err != nil {
+			// If it's a conflict error, retry
+			if errors.IsConflict(err) {
+				return false, nil // Retry
+			}
+			return false, err // Other errors are not retryable
+		}
+
+		return true, nil // Success
+	})
 }
