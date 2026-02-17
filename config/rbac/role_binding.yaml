@@ -8,5 +8,5 @@ roleRef:
   name: manager-role
 subjects:
 - kind: ServiceAccount
-  name: sim-operator-controller-manager
+  name: sim-operator-sim-operator-controller-manager
   namespace: sim-operator-system
