@@ -130,12 +130,28 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log.Info("Target namespace calculation", "kwokNodes", len(kwokNodes), "targetNamespaces", targetNamespaces)
 
 	// Manage namespaces and resources
+	log.Info("Starting load resource management", 
+		"targetNamespaces", targetNamespaces,
+		"kwokNodes", len(kwokNodes))
+	
 	namespaceCount, resourceCounts, err := r.manageLoadResources(ctx, config, kwokNodes, targetNamespaces)
 	if err != nil {
 		r.ErrorCount.Inc()
 		log.Error(err, "Failed to manage load resources")
 		return ctrl.Result{}, err
 	}
+
+	// Calculate total API operations for this reconcile
+	totalResources := 0
+	for resourceType, count := range resourceCounts {
+		totalResources += count
+	}
+	
+	log.Info("Load resource management completed", 
+		"namespaceCount", namespaceCount,
+		"totalResources", totalResources,
+		"resourceBreakdown", resourceCounts,
+		"reconcileDuration", time.Since(startTime).String())
 
 	// Update node annotations for networking churn
 	if config.Spec.AnnotationChurn.Enabled {
@@ -206,6 +222,7 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 
 	log := r.Log.WithName("resource-manager")
 	resourceCounts := make(map[string]int)
+	var namespacesCreated, namespacesDeleted int
 
 	// Get existing managed namespaces
 	existingNamespaces, err := r.getManagedNamespaces(ctx, config)
@@ -214,6 +231,10 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	}
 
 	currentNamespaceCount := len(existingNamespaces)
+	log.Info("Namespace management starting", 
+		"current", currentNamespaceCount, 
+		"target", targetNamespaces,
+		"kwokNodes", len(kwokNodes))
 
 	// Scale up namespaces if needed
 	if currentNamespaceCount < targetNamespaces {
@@ -223,6 +244,7 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		if err := r.createNamespaces(ctx, config, kwokNodes, namespacesToCreate); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to create namespaces: %w", err)
 		}
+		namespacesCreated = namespacesToCreate
 
 		// Re-fetch to get updated count
 		existingNamespaces, err = r.getManagedNamespaces(ctx, config)
@@ -230,6 +252,7 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 			return currentNamespaceCount, resourceCounts, err
 		}
 		currentNamespaceCount = len(existingNamespaces)
+		log.Info("Namespaces created successfully", "created", namespacesCreated, "newTotal", currentNamespaceCount)
 	}
 
 	// Scale down namespaces if needed
@@ -240,7 +263,9 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		if err := r.deleteNamespaces(ctx, config, existingNamespaces, namespacesToDelete); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to delete namespaces: %w", err)
 		}
+		namespacesDeleted = namespacesToDelete
 		currentNamespaceCount = targetNamespaces
+		log.Info("Namespaces deleted successfully", "deleted", namespacesDeleted, "newTotal", currentNamespaceCount)
 	}
 
 	// Get the current list of managed namespaces (including newly created ones)
@@ -266,6 +291,20 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 			}
 		}
 	}
+
+	// Calculate total resource operations
+	totalResourceOperations := 0
+	for _, count := range resourceCounts {
+		totalResourceOperations += count
+	}
+
+	log.Info("Load resource management completed", 
+		"finalNamespaces", currentNamespaceCount,
+		"namespacesCreated", namespacesCreated,
+		"namespacesDeleted", namespacesDeleted,
+		"totalResourceOperations", totalResourceOperations,
+		"resourceBreakdown", resourceCounts,
+		"namespacesProcessed", len(currentNamespaces))
 
 	return currentNamespaceCount, resourceCounts, nil
 }

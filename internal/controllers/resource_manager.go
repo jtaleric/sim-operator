@@ -28,6 +28,8 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 
 	log := r.Log.WithName("resource-manager").WithValues("namespace", namespace.Name)
 	resourceCounts := make(map[string]int)
+	var totalApiCalls, totalCreated, totalDeleted, totalUpdated int32
+	startTime := time.Now()
 
 	// Verify namespace exists and is ready before creating any resources
 	ready, phase := r.checkNamespaceStatus(ctx, namespace.Name)
@@ -35,6 +37,15 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		log.V(1).Info("Namespace not ready for resource creation", "phase", phase)
 		return resourceCounts, fmt.Errorf("namespace %s is not ready (phase: %s)", namespace.Name, phase)
 	}
+
+	log.Info("Starting resource management for namespace", 
+		"phase", phase,
+		"configmapsEnabled", config.Spec.ResourceChurn.ConfigMaps.Enabled,
+		"secretsEnabled", config.Spec.ResourceChurn.Secrets.Enabled,
+		"routesEnabled", config.Spec.ResourceChurn.Routes.Enabled,
+		"imagestreamsEnabled", config.Spec.ResourceChurn.ImageStreams.Enabled,
+		"buildconfigsEnabled", config.Spec.ResourceChurn.BuildConfigs.Enabled,
+		"eventsEnabled", config.Spec.ResourceChurn.Events.Enabled)
 
 	// ResourcesPerNamespace configuration available but not used in current implementation
 	// resourcesPerNs := int32(5) // Default based on must-gather analysis
@@ -110,6 +121,24 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		}
 	}
 
+	duration := time.Since(startTime)
+	
+	// Calculate totals from individual resource managers
+	for resourceType, count := range resourceCounts {
+		if resourceType == "events" {
+			totalCreated += int32(count) // Events are only created, not updated
+		}
+	}
+
+	log.Info("Namespace resource management completed", 
+		"duration", duration.String(),
+		"totalApiCalls", totalApiCalls,
+		"totalCreated", totalCreated,
+		"totalUpdated", totalUpdated,
+		"totalDeleted", totalDeleted,
+		"resourceCounts", resourceCounts,
+		"apiCallsPerSecond", fmt.Sprintf("%.1f", float64(totalApiCalls)/duration.Seconds()))
+
 	return resourceCounts, nil
 }
 
@@ -142,6 +171,8 @@ func (r *ScaleLoadConfigReconciler) shouldCreateResourceForNamespace(namespace c
 func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	log := r.Log.WithName("configmap-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+	
 	// List existing ConfigMaps managed by this operator
 	configMapList := &corev1.ConfigMapList{}
 	listOpts := &client.ListOptions{
@@ -157,24 +188,38 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	}
 
 	currentCount := len(configMapList.Items)
+	var created, deleted, apiCalls int32
+	apiCalls++ // List operation
+
+	log.Info("ConfigMap management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
 		for i := int32(currentCount); i < targetCount; i++ {
 			configMap := r.generateConfigMap(config, namespace, i)
 			if err := r.Create(ctx, configMap); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to create ConfigMap: %w", err)
+				log.Error(err, "Failed to create ConfigMap", "name", configMap.Name, "created", created)
+				return int32(currentCount) + created, fmt.Errorf("failed to create ConfigMap: %w", err)
 			}
+			created++
+			apiCalls++
 		}
+		log.Info("ConfigMaps created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
+		toDelete := int32(currentCount) - targetCount
 		for i := int32(len(configMapList.Items)) - 1; i >= targetCount; i-- {
 			if err := r.Delete(ctx, &configMapList.Items[i]); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to delete ConfigMap: %w", err)
+				log.Error(err, "Failed to delete ConfigMap", "name", configMapList.Items[i].Name, "deleted", deleted)
+				return int32(currentCount) - deleted, fmt.Errorf("failed to delete ConfigMap: %w", err)
 			}
+			deleted++
+			apiCalls++
 		}
+		log.Info("ConfigMaps deleted", "count", toDelete, "apiCalls", deleted)
 	}
 
 	// Randomly update some ConfigMaps to simulate churn
@@ -182,7 +227,15 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	for i, item := range configMapList.Items {
 		objs[i] = &item
 	}
-	r.performResourceChurn(ctx, config, objs, namespace, "configmap")
+	updatedCount := r.performResourceChurn(ctx, config, objs, namespace, "configmap")
+	apiCalls += updatedCount
+
+	log.Info("ConfigMap management completed", 
+		"final", targetCount, 
+		"created", created, 
+		"deleted", deleted, 
+		"updated", updatedCount,
+		"totalApiCalls", apiCalls)
 
 	return targetCount, nil
 }
@@ -218,6 +271,8 @@ func (r *ScaleLoadConfigReconciler) generateConfigMap(config *scalev1.ScaleLoadC
 func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	log := r.Log.WithName("secret-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+	
 	secretList := &corev1.SecretList{}
 	listOpts := &client.ListOptions{
 		Namespace: namespace,
@@ -232,24 +287,38 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	}
 
 	currentCount := len(secretList.Items)
+	var created, deleted, apiCalls int32
+	apiCalls++ // List operation
+
+	log.Info("Secret management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
 		for i := int32(currentCount); i < targetCount; i++ {
 			secret := r.generateSecret(config, namespace, i)
 			if err := r.Create(ctx, secret); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to create Secret: %w", err)
+				log.Error(err, "Failed to create Secret", "name", secret.Name, "created", created)
+				return int32(currentCount) + created, fmt.Errorf("failed to create Secret: %w", err)
 			}
+			created++
+			apiCalls++
 		}
+		log.Info("Secrets created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
+		toDelete := int32(currentCount) - targetCount
 		for i := int32(len(secretList.Items)) - 1; i >= targetCount; i-- {
 			if err := r.Delete(ctx, &secretList.Items[i]); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to delete Secret: %w", err)
+				log.Error(err, "Failed to delete Secret", "name", secretList.Items[i].Name, "deleted", deleted)
+				return int32(currentCount) - deleted, fmt.Errorf("failed to delete Secret: %w", err)
 			}
+			deleted++
+			apiCalls++
 		}
+		log.Info("Secrets deleted", "count", toDelete, "apiCalls", deleted)
 	}
 
 	// Simulate secret rotation
@@ -257,7 +326,15 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	for i, item := range secretList.Items {
 		objs[i] = &item
 	}
-	r.performResourceChurn(ctx, config, objs, namespace, "secret")
+	updatedCount := r.performResourceChurn(ctx, config, objs, namespace, "secret")
+	apiCalls += updatedCount
+
+	log.Info("Secret management completed", 
+		"final", targetCount, 
+		"created", created, 
+		"deleted", deleted, 
+		"updated", updatedCount,
+		"totalApiCalls", apiCalls)
 
 	return targetCount, nil
 }
@@ -579,6 +656,8 @@ func (r *ScaleLoadConfigReconciler) generateBuildConfig(config *scalev1.ScaleLoa
 func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
 
+	log := r.Log.WithName("event-manager").WithValues("namespace", namespace)
+	
 	// Calculate how many events to generate based on time and rate
 	eventsPerHour := config.Spec.ResourceChurn.Events.EventsPerNodePerHour
 	if eventsPerHour <= 0 {
@@ -596,15 +675,30 @@ func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 		eventsToCreate = 10 // Cap to prevent spam
 	}
 
-	var createdCount int32
+	log.Info("Event generation starting", 
+		"eventsPerHour", eventsPerHour,
+		"timeSinceLastReconcile", timeSinceLastReconcile.String(),
+		"targetEvents", eventsToCreate)
+
+	var createdCount, failedCount, apiCalls int32
 	for i := int32(0); i < eventsToCreate; i++ {
 		event := r.generateEvent(config, namespace, i)
 		if err := r.Create(ctx, event); err != nil {
 			// Events often conflict on creation, which is normal
-			continue
+			failedCount++
+			log.V(2).Info("Event creation failed (normal)", "error", err.Error())
+		} else {
+			createdCount++
 		}
-		createdCount++
+		apiCalls++
 	}
+
+	log.Info("Event generation completed", 
+		"attempted", eventsToCreate,
+		"created", createdCount,
+		"failed", failedCount,
+		"successRate", fmt.Sprintf("%.1f%%", float64(createdCount)/float64(eventsToCreate)*100),
+		"apiCalls", apiCalls)
 
 	return createdCount, nil
 }
@@ -791,14 +885,15 @@ func (r *ScaleLoadConfigReconciler) isNamespaceReady(ctx context.Context, namesp
 
 // performResourceChurn simulates realistic resource update patterns
 func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
-	config *scalev1.ScaleLoadConfig, resources []client.Object, namespace, resourceType string) {
+	config *scalev1.ScaleLoadConfig, resources []client.Object, namespace, resourceType string) int32 {
 
 	if len(resources) == 0 {
-		return
+		return 0
 	}
 
 	// Randomly select resources to update based on configuration
 	updateChance := 0.1 // 10% chance per reconcile cycle
+	var updatedCount int32
 
 	for _, resource := range resources {
 		if mathrand.Float64() < updateChance {
@@ -815,7 +910,20 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 			if err := r.Update(ctx, resource); err != nil {
 				r.Log.V(1).Info("Failed to update resource for churn",
 					"resource", resource.GetName(), "type", resourceType, "error", err)
+			} else {
+				updatedCount++
 			}
 		}
 	}
+
+	if updatedCount > 0 {
+		r.Log.Info("Resource churn completed", 
+			"type", resourceType, 
+			"namespace", namespace,
+			"totalResources", len(resources),
+			"updated", updatedCount,
+			"updateRate", fmt.Sprintf("%.1f%%", float64(updatedCount)/float64(len(resources))*100))
+	}
+
+	return updatedCount
 }
