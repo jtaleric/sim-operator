@@ -47,7 +47,7 @@ API Call Rate = 20 calls/minute/node (configurable)
 oc apply -k config/default/
 
 # Verify deployment
-oc get pods -n kwok-load-generator-system
+oc get pods -n sim-operator-system
 ```
 
 ### 2. Deploy KWOK Nodes

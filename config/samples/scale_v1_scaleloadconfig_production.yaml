@@ -12,9 +12,12 @@ spec:
   # Production load profile based on 120-node cluster analysis
   loadProfile:
     profile: "production"
-    namespacesPerNode: 0.6  # ~72 namespaces for 120 nodes
+    namespacesPerNode: "0.6"  # ~72 namespaces for 120 nodes
     resourcesPerNamespace: 5  # ConfigMap + Secret + Route + ImageStream + BuildConfig
-    apiCallRate: 20  # API calls per minute per node
+    # Example: Per-node rate limiting - scales with cluster size (realistic simulation)
+    apiCallRatePerNode: 200  # API calls per minute per node (realistic for production)
+    # Alternative: Static rate limiting (commented out when using per-node)
+    # apiCallRateStatic: 10000  # Fixed total for testing specific API loads
   
   # Namespace configuration
   namespaceConfig:
@@ -40,35 +43,35 @@ spec:
       count: 1
       updateFrequencyMin: 300   # 5 minutes
       updateFrequencyMax: 1800  # 30 minutes
-      deleteRecreateChance: 0.1
+      deleteRecreateChance: "0.1"
     
     secrets:
       enabled: true
       count: 1
       updateFrequencyMin: 600   # 10 minutes (secrets updated less frequently)
       updateFrequencyMax: 3600  # 1 hour
-      deleteRecreateChance: 0.05
+      deleteRecreateChance: "0.05"
     
     routes:
       enabled: true
       count: 1
       updateFrequencyMin: 900   # 15 minutes
       updateFrequencyMax: 1800  # 30 minutes
-      deleteRecreateChance: 0.05
+      deleteRecreateChance: "0.05"
     
     imageStreams:
       enabled: true
       count: 1
       updateFrequencyMin: 1800  # 30 minutes
       updateFrequencyMax: 7200  # 2 hours
-      deleteRecreateChance: 0.02
+      deleteRecreateChance: "0.02"
     
     buildConfigs:
       enabled: true
       count: 1
       updateFrequencyMin: 3600  # 1 hour
       updateFrequencyMax: 14400 # 4 hours
-      deleteRecreateChance: 0.02
+      deleteRecreateChance: "0.02"
     
     events:
       enabled: true

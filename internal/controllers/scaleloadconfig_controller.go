@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -16,12 +15,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	scalev1 "github.com/jtaleric/sim-operator/api/v1"
 )
@@ -42,6 +39,10 @@ type ScaleLoadConfigReconciler struct {
 	// Internal state for load generation
 	lastReconcileTime time.Time
 	resourceManagers  map[string]*ResourceManager
+
+	// API rate limiting
+	apiCallCounter     int32
+	lastRateLimitReset time.Time
 }
 
 // ResourceManager handles lifecycle of resources for a specific namespace
@@ -64,6 +65,8 @@ type ResourceManager struct {
 //+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=image.openshift.io,resources=imagestreams,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=build.openshift.io,resources=buildconfigs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile implements the main reconciliation loop
 func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -122,18 +125,36 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Found KWOK nodes", "count", len(kwokNodes))
+	log.V(1).Info("Found KWOK nodes", "count", len(kwokNodes))
 	r.KwokNodeCount.Set(float64(len(kwokNodes)))
 
 	// Calculate target namespace count based on load profile
 	targetNamespaces := r.calculateTargetNamespaces(config, len(kwokNodes))
-	log.Info("Target namespace calculation", "kwokNodes", len(kwokNodes), "targetNamespaces", targetNamespaces)
+
+	// Log effective API rate
+	effectiveRate, rateType := r.getEffectiveAPIRate(config, len(kwokNodes))
+	log.Info("API rate configuration",
+		"effectiveRate", effectiveRate,
+		"rateType", rateType,
+		"nodeCount", len(kwokNodes),
+		"ratePerSecond", fmt.Sprintf("%.1f", float64(effectiveRate)/60.0))
+
+	log.V(1).Info("Target namespace calculation", "kwokNodes", len(kwokNodes), "targetNamespaces", targetNamespaces)
+
+	// Check API rate limit before proceeding with resource management
+	estimatedAPICalls := int32(targetNamespaces * 5) // Rough estimate: 5 API calls per namespace
+	if !r.checkAPIRateLimit(config, estimatedAPICalls, len(kwokNodes)) {
+		log.V(1).Info("Rate limit reached, skipping resource management this cycle",
+			"estimatedCalls", estimatedAPICalls,
+			"currentCounter", r.apiCallCounter)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
 
 	// Manage namespaces and resources
-	log.Info("Starting load resource management", 
+	log.V(1).Info("Starting load resource management",
 		"targetNamespaces", targetNamespaces,
 		"kwokNodes", len(kwokNodes))
-	
+
 	namespaceCount, resourceCounts, err := r.manageLoadResources(ctx, config, kwokNodes, targetNamespaces)
 	if err != nil {
 		r.ErrorCount.Inc()
@@ -141,16 +162,18 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Update last reconcile time for rate limiting
+	r.lastReconcileTime = startTime
+
 	// Calculate total API operations for this reconcile
 	totalResources := 0
-	for resourceType, count := range resourceCounts {
+	for _, count := range resourceCounts {
 		totalResources += count
 	}
-	
-	log.Info("Load resource management completed", 
+
+	log.Info("Load resource management completed",
 		"namespaceCount", namespaceCount,
 		"totalResources", totalResources,
-		"resourceBreakdown", resourceCounts,
 		"reconcileDuration", time.Since(startTime).String())
 
 	// Update node annotations for networking churn
@@ -231,15 +254,15 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	}
 
 	currentNamespaceCount := len(existingNamespaces)
-	log.Info("Namespace management starting", 
-		"current", currentNamespaceCount, 
+	log.V(1).Info("Namespace management starting",
+		"current", currentNamespaceCount,
 		"target", targetNamespaces,
 		"kwokNodes", len(kwokNodes))
 
 	// Scale up namespaces if needed
 	if currentNamespaceCount < targetNamespaces {
 		namespacesToCreate := targetNamespaces - currentNamespaceCount
-		log.Info("Scaling up namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toCreate", namespacesToCreate)
+		log.V(1).Info("Scaling up namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toCreate", namespacesToCreate)
 
 		if err := r.createNamespaces(ctx, config, kwokNodes, namespacesToCreate); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to create namespaces: %w", err)
@@ -252,20 +275,20 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 			return currentNamespaceCount, resourceCounts, err
 		}
 		currentNamespaceCount = len(existingNamespaces)
-		log.Info("Namespaces created successfully", "created", namespacesCreated, "newTotal", currentNamespaceCount)
+		log.V(1).Info("Namespaces created successfully", "created", namespacesCreated, "newTotal", currentNamespaceCount)
 	}
 
 	// Scale down namespaces if needed
 	if currentNamespaceCount > targetNamespaces {
 		namespacesToDelete := currentNamespaceCount - targetNamespaces
-		log.Info("Scaling down namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toDelete", namespacesToDelete)
+		log.V(1).Info("Scaling down namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toDelete", namespacesToDelete)
 
 		if err := r.deleteNamespaces(ctx, config, existingNamespaces, namespacesToDelete); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to delete namespaces: %w", err)
 		}
 		namespacesDeleted = namespacesToDelete
 		currentNamespaceCount = targetNamespaces
-		log.Info("Namespaces deleted successfully", "deleted", namespacesDeleted, "newTotal", currentNamespaceCount)
+		log.V(1).Info("Namespaces deleted successfully", "deleted", namespacesDeleted, "newTotal", currentNamespaceCount)
 	}
 
 	// Get the current list of managed namespaces (including newly created ones)
@@ -298,7 +321,7 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		totalResourceOperations += count
 	}
 
-	log.Info("Load resource management completed", 
+	log.V(1).Info("Load resource management completed",
 		"finalNamespaces", currentNamespaceCount,
 		"namespacesCreated", namespacesCreated,
 		"namespacesDeleted", namespacesDeleted,
@@ -505,49 +528,4 @@ func (r *ScaleLoadConfigReconciler) initializeMetrics() {
 
 	// Register metrics
 	prometheus.MustRegister(r.KwokNodeCount, r.GeneratedNamespaces, r.APICallRate, r.ReconcileTime, r.ErrorCount)
-}
-
-// mapNodeToScaleLoadConfigs maps node events to ScaleLoadConfig reconciliation requests
-func (r *ScaleLoadConfigReconciler) mapNodeToScaleLoadConfigs(obj client.Object) []reconcile.Request {
-	// Get all ScaleLoadConfigs and trigger reconciliation for each
-	configList := &scalev1.ScaleLoadConfigList{}
-	if err := r.List(context.Background(), configList); err != nil {
-		r.Log.Error(err, "Failed to list ScaleLoadConfigs for node mapping")
-		return nil
-	}
-
-	var requests []reconcile.Request
-	for _, config := range configList.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      config.Name,
-				Namespace: config.Namespace,
-			},
-		})
-	}
-
-	return requests
-}
-
-// isKwokNode checks if a node is a KWOK node based on common labels
-func (r *ScaleLoadConfigReconciler) isKwokNode(obj client.Object) bool {
-	node, ok := obj.(*corev1.Node)
-	if !ok {
-		return false
-	}
-
-	// Check for common KWOK node indicators
-	if node.Labels["type"] == "kwok" {
-		return true
-	}
-
-	if node.Labels["node.kubernetes.io/instance-type"] == "kwok" {
-		return true
-	}
-
-	if strings.Contains(node.Spec.ProviderID, "kwok") {
-		return true
-	}
-
-	return false
 }

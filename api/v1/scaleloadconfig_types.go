@@ -1,7 +1,10 @@
 package v1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ScaleLoadConfigSpec defines the desired state of ScaleLoadConfig
@@ -48,8 +51,18 @@ type LoadProfile struct {
 	ResourcesPerNamespace *int32 `json:"resourcesPerNamespace,omitempty"`
 
 	// APICallRate controls the frequency of API operations (calls per minute per node)
+	// DEPRECATED: Use APICallRatePerNode for clarity. Will be removed in future versions.
 	// +kubebuilder:default=20
 	APICallRate *int32 `json:"apiCallRate,omitempty"`
+
+	// APICallRateStatic sets a fixed total API call rate (calls per minute total)
+	// Takes precedence over APICallRatePerNode if both are set
+	APICallRateStatic *int32 `json:"apiCallRateStatic,omitempty"`
+
+	// APICallRatePerNode sets API call rate that scales with node count (calls per minute per node)
+	// Used when APICallRateStatic is not set
+	// +kubebuilder:default=20
+	APICallRatePerNode *int32 `json:"apiCallRatePerNode,omitempty"`
 }
 
 // NamespaceConfig controls namespace patterns
@@ -282,6 +295,7 @@ type LoadGenerationMetrics struct {
 //+kubebuilder:printcolumn:name="Profile",type="string",JSONPath=".spec.loadProfile.profile"
 //+kubebuilder:printcolumn:name="Enabled",type="boolean",JSONPath=".spec.enabled"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+//+kubebuilder:webhook:path=/validate-scale-openshift-io-v1-scaleloadconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=scale.openshift.io,resources=scaleloadconfigs,verbs=create;update,versions=v1,name=vscaleloadconfig.kb.io,admissionReviewVersions=v1
 
 // ScaleLoadConfig is the Schema for the scaleloadconfigs API
 type ScaleLoadConfig struct {
@@ -299,6 +313,66 @@ type ScaleLoadConfigList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ScaleLoadConfig `json:"items"`
+}
+
+// ValidateCreate implements webhook.Validator so a webhook will be registered for the type
+func (r *ScaleLoadConfig) ValidateCreate() error {
+	return r.validateAPIRateConfiguration()
+}
+
+// ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
+func (r *ScaleLoadConfig) ValidateUpdate(old runtime.Object) error {
+	return r.validateAPIRateConfiguration()
+}
+
+// ValidateDelete implements webhook.Validator so a webhook will be registered for the type
+func (r *ScaleLoadConfig) ValidateDelete() error {
+	// No validation needed for deletion
+	return nil
+}
+
+// validateAPIRateConfiguration ensures only one API rate limiting approach is specified
+func (r *ScaleLoadConfig) validateAPIRateConfiguration() error {
+	loadProfile := r.Spec.LoadProfile
+
+	// Count how many API rate fields are set
+	fieldsSet := 0
+	var setFields []string
+
+	if loadProfile.APICallRateStatic != nil {
+		fieldsSet++
+		setFields = append(setFields, "apiCallRateStatic")
+	}
+
+	if loadProfile.APICallRatePerNode != nil {
+		fieldsSet++
+		setFields = append(setFields, "apiCallRatePerNode")
+	}
+
+	if loadProfile.APICallRate != nil {
+		fieldsSet++
+		setFields = append(setFields, "apiCallRate")
+	}
+
+	// Allow only one API rate field to be set
+	if fieldsSet > 1 {
+		return fmt.Errorf("only one API rate limiting approach can be specified, found: %v. Choose either 'apiCallRateStatic' for fixed total rate or 'apiCallRatePerNode' for node-scaling rate. Note: 'apiCallRate' is deprecated, use 'apiCallRatePerNode' instead", setFields)
+	}
+
+	// Validate positive values
+	if loadProfile.APICallRateStatic != nil && *loadProfile.APICallRateStatic <= 0 {
+		return fmt.Errorf("apiCallRateStatic must be positive, got %d", *loadProfile.APICallRateStatic)
+	}
+
+	if loadProfile.APICallRatePerNode != nil && *loadProfile.APICallRatePerNode <= 0 {
+		return fmt.Errorf("apiCallRatePerNode must be positive, got %d", *loadProfile.APICallRatePerNode)
+	}
+
+	if loadProfile.APICallRate != nil && *loadProfile.APICallRate <= 0 {
+		return fmt.Errorf("apiCallRate must be positive, got %d", *loadProfile.APICallRate)
+	}
+
+	return nil
 }
 
 func init() {

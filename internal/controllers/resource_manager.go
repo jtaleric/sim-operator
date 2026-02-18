@@ -38,7 +38,7 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		return resourceCounts, fmt.Errorf("namespace %s is not ready (phase: %s)", namespace.Name, phase)
 	}
 
-	log.Info("Starting resource management for namespace", 
+	log.V(1).Info("Starting resource management for namespace",
 		"phase", phase,
 		"configmapsEnabled", config.Spec.ResourceChurn.ConfigMaps.Enabled,
 		"secretsEnabled", config.Spec.ResourceChurn.Secrets.Enabled,
@@ -47,11 +47,8 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		"buildconfigsEnabled", config.Spec.ResourceChurn.BuildConfigs.Enabled,
 		"eventsEnabled", config.Spec.ResourceChurn.Events.Enabled)
 
-	// ResourcesPerNamespace configuration available but not used in current implementation
-	// resourcesPerNs := int32(5) // Default based on must-gather analysis
-	// if config.Spec.LoadProfile.ResourcesPerNamespace != nil {
-	//	resourcesPerNs = *config.Spec.LoadProfile.ResourcesPerNamespace
-	// }
+	// For now, remove per-namespace rate limiting - apply at higher level
+	// The issue is we're doing too many API calls, not that we need to limit each namespace
 
 	// Manage each resource type
 	if config.Spec.ResourceChurn.ConfigMaps.Enabled {
@@ -122,7 +119,7 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 	}
 
 	duration := time.Since(startTime)
-	
+
 	// Calculate totals from individual resource managers
 	for resourceType, count := range resourceCounts {
 		if resourceType == "events" {
@@ -130,7 +127,7 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		}
 	}
 
-	log.Info("Namespace resource management completed", 
+	log.V(1).Info("Namespace resource management completed",
 		"duration", duration.String(),
 		"totalApiCalls", totalApiCalls,
 		"totalCreated", totalCreated,
@@ -172,7 +169,7 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
 	log := r.Log.WithName("configmap-manager").WithValues("namespace", namespace, "targetCount", targetCount)
-	
+
 	// List existing ConfigMaps managed by this operator
 	configMapList := &corev1.ConfigMapList{}
 	listOpts := &client.ListOptions{
@@ -186,12 +183,13 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	if err := r.List(ctx, configMapList, listOpts); err != nil {
 		return 0, fmt.Errorf("failed to list ConfigMaps: %w", err)
 	}
+	r.recordAPICall(config, 1) // List operation
 
 	currentCount := len(configMapList.Items)
 	var created, deleted, apiCalls int32
 	apiCalls++ // List operation
 
-	log.Info("ConfigMap management starting", "current", currentCount, "target", targetCount)
+	log.V(1).Info("ConfigMap management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
@@ -202,10 +200,11 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 				log.Error(err, "Failed to create ConfigMap", "name", configMap.Name, "created", created)
 				return int32(currentCount) + created, fmt.Errorf("failed to create ConfigMap: %w", err)
 			}
+			r.recordAPICall(config, 1) // Create operation
 			created++
 			apiCalls++
 		}
-		log.Info("ConfigMaps created", "count", toCreate, "apiCalls", created)
+		log.V(1).Info("ConfigMaps created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
@@ -216,10 +215,11 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 				log.Error(err, "Failed to delete ConfigMap", "name", configMapList.Items[i].Name, "deleted", deleted)
 				return int32(currentCount) - deleted, fmt.Errorf("failed to delete ConfigMap: %w", err)
 			}
+			r.recordAPICall(config, 1) // Delete operation
 			deleted++
 			apiCalls++
 		}
-		log.Info("ConfigMaps deleted", "count", toDelete, "apiCalls", deleted)
+		log.V(1).Info("ConfigMaps deleted", "count", toDelete, "apiCalls", deleted)
 	}
 
 	// Randomly update some ConfigMaps to simulate churn
@@ -230,10 +230,10 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	updatedCount := r.performResourceChurn(ctx, config, objs, namespace, "configmap")
 	apiCalls += updatedCount
 
-	log.Info("ConfigMap management completed", 
-		"final", targetCount, 
-		"created", created, 
-		"deleted", deleted, 
+	log.V(1).Info("ConfigMap management completed",
+		"final", targetCount,
+		"created", created,
+		"deleted", deleted,
 		"updated", updatedCount,
 		"totalApiCalls", apiCalls)
 
@@ -272,7 +272,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
 	log := r.Log.WithName("secret-manager").WithValues("namespace", namespace, "targetCount", targetCount)
-	
+
 	secretList := &corev1.SecretList{}
 	listOpts := &client.ListOptions{
 		Namespace: namespace,
@@ -290,7 +290,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	var created, deleted, apiCalls int32
 	apiCalls++ // List operation
 
-	log.Info("Secret management starting", "current", currentCount, "target", targetCount)
+	log.V(1).Info("Secret management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
@@ -304,7 +304,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 			created++
 			apiCalls++
 		}
-		log.Info("Secrets created", "count", toCreate, "apiCalls", created)
+		log.V(1).Info("Secrets created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
@@ -318,7 +318,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 			deleted++
 			apiCalls++
 		}
-		log.Info("Secrets deleted", "count", toDelete, "apiCalls", deleted)
+		log.V(1).Info("Secrets deleted", "count", toDelete, "apiCalls", deleted)
 	}
 
 	// Simulate secret rotation
@@ -329,10 +329,10 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	updatedCount := r.performResourceChurn(ctx, config, objs, namespace, "secret")
 	apiCalls += updatedCount
 
-	log.Info("Secret management completed", 
-		"final", targetCount, 
-		"created", created, 
-		"deleted", deleted, 
+	log.V(1).Info("Secret management completed",
+		"final", targetCount,
+		"created", created,
+		"deleted", deleted,
 		"updated", updatedCount,
 		"totalApiCalls", apiCalls)
 
@@ -657,7 +657,7 @@ func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
 
 	log := r.Log.WithName("event-manager").WithValues("namespace", namespace)
-	
+
 	// Calculate how many events to generate based on time and rate
 	eventsPerHour := config.Spec.ResourceChurn.Events.EventsPerNodePerHour
 	if eventsPerHour <= 0 {
@@ -675,7 +675,7 @@ func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 		eventsToCreate = 10 // Cap to prevent spam
 	}
 
-	log.Info("Event generation starting", 
+	log.V(1).Info("Event generation starting",
 		"eventsPerHour", eventsPerHour,
 		"timeSinceLastReconcile", timeSinceLastReconcile.String(),
 		"targetEvents", eventsToCreate)
@@ -693,7 +693,7 @@ func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 		apiCalls++
 	}
 
-	log.Info("Event generation completed", 
+	log.V(1).Info("Event generation completed",
 		"attempted", eventsToCreate,
 		"created", createdCount,
 		"failed", failedCount,
@@ -815,13 +815,23 @@ func generateRandomString(length int) string {
 
 func generateRandomPassword(length int) string {
 	bytes := make([]byte, length)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to math/rand if crypto/rand fails
+		for i := range bytes {
+			bytes[i] = byte(mathrand.Intn(256))
+		}
+	}
 	return base64.URLEncoding.EncodeToString(bytes)[:length]
 }
 
 func generateRandomAPIKey() string {
 	bytes := make([]byte, 32)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to math/rand if crypto/rand fails
+		for i := range bytes {
+			bytes[i] = byte(mathrand.Intn(256))
+		}
+	}
 	return base64.URLEncoding.EncodeToString(bytes)
 }
 
@@ -917,8 +927,8 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 	}
 
 	if updatedCount > 0 {
-		r.Log.Info("Resource churn completed", 
-			"type", resourceType, 
+		r.Log.V(1).Info("Resource churn completed",
+			"type", resourceType,
 			"namespace", namespace,
 			"totalResources", len(resources),
 			"updated", updatedCount,
@@ -926,4 +936,77 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 	}
 
 	return updatedCount
+}
+
+// checkAPIRateLimit checks if we can make the requested number of API calls
+func (r *ScaleLoadConfigReconciler) checkAPIRateLimit(config *scalev1.ScaleLoadConfig, requestedCalls int32, nodeCount int) bool {
+	var totalAllowedRate int32
+
+	// Priority: APICallRateStatic > APICallRatePerNode > APICallRate (deprecated)
+	if config.Spec.LoadProfile.APICallRateStatic != nil {
+		// Static rate: fixed total regardless of node count
+		totalAllowedRate = *config.Spec.LoadProfile.APICallRateStatic
+	} else if config.Spec.LoadProfile.APICallRatePerNode != nil {
+		// Per-node rate: scales with node count
+		totalAllowedRate = *config.Spec.LoadProfile.APICallRatePerNode * int32(nodeCount)
+	} else if config.Spec.LoadProfile.APICallRate != nil {
+		// Deprecated field: treat as per-node for backward compatibility
+		totalAllowedRate = *config.Spec.LoadProfile.APICallRate * int32(nodeCount)
+	} else {
+		// Default: 20 calls/min/node
+		totalAllowedRate = 20 * int32(nodeCount)
+	}
+
+	now := time.Now()
+
+	// Reset counter every minute
+	if r.lastRateLimitReset.IsZero() || now.Sub(r.lastRateLimitReset) >= time.Minute {
+		r.apiCallCounter = 0
+		r.lastRateLimitReset = now
+	}
+
+	// Check if we would exceed the limit
+	if r.apiCallCounter+requestedCalls > totalAllowedRate {
+		return false
+	}
+
+	return true
+}
+
+// recordAPICall records API calls for rate limiting
+func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfig, callCount int32) {
+	now := time.Now()
+
+	// Reset counter every minute
+	if r.lastRateLimitReset.IsZero() || now.Sub(r.lastRateLimitReset) >= time.Minute {
+		r.apiCallCounter = 0
+		r.lastRateLimitReset = now
+	}
+
+	r.apiCallCounter += callCount
+
+	// Record metrics
+	r.APICallRate.Observe(float64(callCount))
+}
+
+// getEffectiveAPIRate returns the effective API rate for the given configuration and node count
+func (r *ScaleLoadConfigReconciler) getEffectiveAPIRate(config *scalev1.ScaleLoadConfig, nodeCount int) (int32, string) {
+	var totalRate int32
+	var rateType string
+
+	if config.Spec.LoadProfile.APICallRateStatic != nil {
+		totalRate = *config.Spec.LoadProfile.APICallRateStatic
+		rateType = "static"
+	} else if config.Spec.LoadProfile.APICallRatePerNode != nil {
+		totalRate = *config.Spec.LoadProfile.APICallRatePerNode * int32(nodeCount)
+		rateType = "per-node"
+	} else if config.Spec.LoadProfile.APICallRate != nil {
+		totalRate = *config.Spec.LoadProfile.APICallRate * int32(nodeCount)
+		rateType = "per-node-deprecated"
+	} else {
+		totalRate = 20 * int32(nodeCount)
+		rateType = "default-per-node"
+	}
+
+	return totalRate, rateType
 }

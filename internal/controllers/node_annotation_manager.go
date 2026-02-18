@@ -49,7 +49,7 @@ func (r *ScaleLoadConfigReconciler) updateNodeAnnotations(ctx context.Context,
 			}
 		}
 
-		// Apply general cluster annotations
+		// Apply general cluster annotations (always updates)
 		if r.updateClusterAnnotations(nodeToUpdate) {
 			updated = true
 		}
@@ -224,27 +224,23 @@ func (r *ScaleLoadConfigReconciler) updateClusterAnnotations(node *corev1.Node) 
 		node.Annotations = make(map[string]string)
 	}
 
-	updated := false
 	now := time.Now()
 
 	// CSI and volume annotations
 	if rand.Float64() < 0.1 { // Update less frequently
 		node.Annotations["csi.volume.kubernetes.io/nodeid"] = generateCSINodeID()
-		updated = true
 	}
 
 	// Machine API annotations
 	if rand.Float64() < 0.05 { // Update rarely
 		node.Annotations["machine.openshift.io/machine"] = generateMachineReference(node.Name)
-		updated = true
 	}
 
-	// Custom load generator tracking
+	// Custom load generator tracking (always updated)
 	node.Annotations["scale.openshift.io/load-generator-managed"] = "true"
 	node.Annotations["scale.openshift.io/last-seen"] = now.Format(time.RFC3339)
-	updated = true
 
-	return updated
+	return true
 }
 
 // Helper functions for generating realistic annotation values

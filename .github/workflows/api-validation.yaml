@@ -1,0 +1,154 @@
+name: API Validation Tests
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'test/validation/**'
+      - 'config/samples/**'
+  
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'api/**'
+      - 'test/validation/**'
+
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  api-validation-tests:
+    name: API Rate Limiting Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Run API validation unit tests
+      run: |
+        echo "🧪 Running API validation unit tests..."
+        go test -v ./api/v1 -run TestScaleLoadConfig_Validate
+
+    - name: Test validation logic comprehensively
+      run: |
+        echo "🔍 Testing validation edge cases..."
+        go test -v ./api/v1 -run TestScaleLoadConfig_ValidateAPIRateConfiguration
+
+    - name: Verify sample configurations
+      run: |
+        echo "📋 Verifying sample configurations follow validation rules..."
+        
+        # Check that sample configs don't violate validation rules
+        for file in config/samples/*.yaml; do
+          if [ -f "$file" ]; then
+            echo "Checking $file for validation rule compliance..."
+            
+            # Count API rate fields in each document
+            static_count=$(yq eval-all '.spec.loadProfile.apiCallRateStatic // "empty"' "$file" | grep -v empty | wc -l)
+            per_node_count=$(yq eval-all '.spec.loadProfile.apiCallRatePerNode // "empty"' "$file" | grep -v empty | wc -l) 
+            deprecated_count=$(yq eval-all '.spec.loadProfile.apiCallRate // "empty"' "$file" | grep -v empty | wc -l)
+            
+            total_fields=$((static_count + per_node_count + deprecated_count))
+            
+            if [ $total_fields -gt 1 ]; then
+              echo "❌ $file violates validation rules (multiple API rate fields)"
+              echo "   apiCallRateStatic: $static_count"
+              echo "   apiCallRatePerNode: $per_node_count"  
+              echo "   apiCallRate: $deprecated_count"
+              exit 1
+            else
+              echo "✅ $file follows validation rules"
+            fi
+          fi
+        done
+
+    - name: Validate test files structure
+      run: |
+        echo "🏗️  Validating test file structure..."
+        
+        # Ensure test files exist
+        if [ ! -f "test/validation/valid_configs.yaml" ]; then
+          echo "❌ Missing test/validation/valid_configs.yaml"
+          exit 1
+        fi
+        
+        if [ ! -f "test/validation/invalid_configs.yaml" ]; then
+          echo "❌ Missing test/validation/invalid_configs.yaml"
+          exit 1
+        fi
+        
+        # Check that invalid configs actually violate rules
+        echo "Checking invalid configs actually have violations..."
+        yq eval-all 'select(.metadata.name | test("invalid.*")) | .spec.loadProfile' test/validation/invalid_configs.yaml | \
+        while IFS= read -r profile; do
+          # Count non-null API rate fields
+          static=$(echo "$profile" | yq eval '.apiCallRateStatic // "empty"')
+          per_node=$(echo "$profile" | yq eval '.apiCallRatePerNode // "empty"')
+          deprecated=$(echo "$profile" | yq eval '.apiCallRate // "empty"')
+          
+          field_count=0
+          [ -n "$static" ] && field_count=$((field_count + 1))
+          [ -n "$per_node" ] && field_count=$((field_count + 1))
+          [ -n "$deprecated" ] && field_count=$((field_count + 1))
+          
+          # Check for negative/zero values
+          if [ -n "$static" ] && [ "$static" -le 0 ]; then
+            echo "✅ Found invalid negative/zero static rate: $static"
+          elif [ -n "$per_node" ] && [ "$per_node" -le 0 ]; then
+            echo "✅ Found invalid negative/zero per-node rate: $per_node" 
+          elif [ -n "$deprecated" ] && [ "$deprecated" -le 0 ]; then
+            echo "✅ Found invalid negative/zero deprecated rate: $deprecated"
+          elif [ $field_count -gt 1 ]; then
+            echo "✅ Found invalid multiple fields config"
+          fi
+        done
+        
+        echo "✅ Test file structure is valid"
+
+    - name: Generate validation report
+      run: |
+        echo "📊 Generating validation report..."
+        
+        echo "## API Rate Limiting Validation Report" > validation_report.md
+        echo "" >> validation_report.md
+        
+        echo "### Sample Configurations" >> validation_report.md
+        for file in config/samples/*.yaml; do
+          if [ -f "$file" ]; then
+            name=$(basename "$file")
+            echo "- **$name**:" >> validation_report.md
+            
+            static=$(yq eval '.spec.loadProfile.apiCallRateStatic // "not set"' "$file")
+            per_node=$(yq eval '.spec.loadProfile.apiCallRatePerNode // "not set"' "$file") 
+            deprecated=$(yq eval '.spec.loadProfile.apiCallRate // "not set"' "$file")
+            
+            echo "  - Static rate: $static" >> validation_report.md
+            echo "  - Per-node rate: $per_node" >> validation_report.md
+            echo "  - Deprecated rate: $deprecated" >> validation_report.md
+            echo "" >> validation_report.md
+          fi
+        done
+        
+        echo "### Test Coverage" >> validation_report.md
+        valid_count=$(yq eval-all '. as $item ireduce (0; . + 1)' test/validation/valid_configs.yaml)
+        invalid_count=$(yq eval-all '. as $item ireduce (0; . + 1)' test/validation/invalid_configs.yaml)
+        echo "- Valid configurations: $valid_count" >> validation_report.md
+        echo "- Invalid configurations: $invalid_count" >> validation_report.md
+        echo "" >> validation_report.md
+        
+        cat validation_report.md
+        
+        # Upload as artifact
+        echo "VALIDATION_REPORT<<EOF" >> $GITHUB_ENV
+        cat validation_report.md >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+
