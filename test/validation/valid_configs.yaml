@@ -1,0 +1,145 @@
+# Test cases for valid API rate configurations
+# These should be accepted by the webhook validation
+
+---
+# VALID: Only static rate set
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-static-only
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRateStatic: 5000      # ✅ Only static rate
+  namespaceConfig:
+    namespacePrefix: "test-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# VALID: Only per-node rate set
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-per-node-only
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRatePerNode: 100      # ✅ Only per-node rate
+  namespaceConfig:
+    namespacePrefix: "test-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# VALID: Only deprecated field set (backward compatibility)
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-deprecated-only
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRate: 20              # ✅ Only deprecated field (allowed for backward compatibility)
+  namespaceConfig:
+    namespacePrefix: "test-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# VALID: No rate fields set (uses defaults)
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-defaults
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"        # ✅ No rate fields, uses defaults (20 calls/min/node)
+  namespaceConfig:
+    namespacePrefix: "test-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# VALID: High static rate for stress testing
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-high-static
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "extreme"
+    apiCallRateStatic: 25000     # ✅ High static rate for API server stress testing
+  namespaceConfig:
+    namespacePrefix: "stress-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# VALID: High per-node rate for large cluster simulation
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: valid-high-per-node
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "extreme"
+    apiCallRatePerNode: 500      # ✅ High per-node rate (500 nodes = 250k calls/min)
+  namespaceConfig:
+    namespacePrefix: "large-"
+  annotationChurn:
+    enabled: false  # Disable for testing focus
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true

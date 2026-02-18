@@ -12,9 +12,12 @@ spec:
   # Light development load profile
   loadProfile:
     profile: "development"
-    namespacesPerNode: 0.2  # Light load - ~24 namespaces for 120 nodes
+    namespacesPerNode: "0.2"  # Light load - ~24 namespaces for 120 nodes
     resourcesPerNamespace: 3  # Reduced resource density
-    apiCallRate: 10  # Lower API call frequency
+    # Example: Static rate limiting - fixed 1000 calls/minute regardless of cluster size
+    apiCallRateStatic: 1000  # Total API calls per minute (good for testing API server limits)
+    # Alternative: Per-node rate limiting (commented out when using static)
+    # apiCallRatePerNode: 10  # API calls per minute per node
   
   # Namespace configuration
   namespaceConfig:
@@ -38,14 +41,14 @@ spec:
       count: 1
       updateFrequencyMin: 1800  # 30 minutes
       updateFrequencyMax: 7200  # 2 hours
-      deleteRecreateChance: 0.05
+      deleteRecreateChance: "0.05"
     
     secrets:
       enabled: true
       count: 1
       updateFrequencyMin: 3600  # 1 hour
       updateFrequencyMax: 14400 # 4 hours
-      deleteRecreateChance: 0.02
+      deleteRecreateChance: "0.02"
     
     routes:
       enabled: false  # Disable routes in development
@@ -55,7 +58,7 @@ spec:
       count: 1
       updateFrequencyMin: 7200  # 2 hours
       updateFrequencyMax: 28800 # 8 hours
-      deleteRecreateChance: 0.01
+      deleteRecreateChance: "0.01"
     
     buildConfigs:
       enabled: false  # Disable build configs in development

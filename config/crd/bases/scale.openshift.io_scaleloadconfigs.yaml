@@ -126,8 +126,22 @@ spec:
                 properties:
                   apiCallRate:
                     default: 20
-                    description: APICallRate controls the frequency of API operations
-                      (calls per minute per node)
+                    description: |-
+                      APICallRate controls the frequency of API operations (calls per minute per node)
+                      DEPRECATED: Use APICallRatePerNode for clarity. Will be removed in future versions.
+                    format: int32
+                    type: integer
+                  apiCallRatePerNode:
+                    default: 20
+                    description: |-
+                      APICallRatePerNode sets API call rate that scales with node count (calls per minute per node)
+                      Used when APICallRateStatic is not set
+                    format: int32
+                    type: integer
+                  apiCallRateStatic:
+                    description: |-
+                      APICallRateStatic sets a fixed total API call rate (calls per minute total)
+                      Takes precedence over APICallRatePerNode if both are set
                     format: int32
                     type: integer
                   namespacesPerNode:

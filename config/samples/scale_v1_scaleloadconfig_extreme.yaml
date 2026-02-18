@@ -12,9 +12,12 @@ spec:
   # Extreme load profile for stress testing
   loadProfile:
     profile: "extreme"
-    namespacesPerNode: 1.0  # Heavy load - 1 namespace per node
+    namespacesPerNode: "1.0"  # Heavy load - 1 namespace per node
     resourcesPerNamespace: 10  # High resource density
-    apiCallRate: 50  # High API call frequency
+    # Example: High static rate for stress testing API server
+    apiCallRateStatic: 25000  # Fixed 25k calls/minute (417/second) for stress testing
+    # Alternative: Per-node scaling for extreme load
+    # apiCallRatePerNode: 500  # Very high per-node rate
   
   # Namespace configuration
   namespaceConfig:
@@ -41,35 +44,35 @@ spec:
       count: 3
       updateFrequencyMin: 60   # 1 minute
       updateFrequencyMax: 300  # 5 minutes
-      deleteRecreateChance: 0.2
+      deleteRecreateChance: "0.2"
     
     secrets:
       enabled: true
       count: 2
       updateFrequencyMin: 120  # 2 minutes
       updateFrequencyMax: 600  # 10 minutes
-      deleteRecreateChance: 0.15
+      deleteRecreateChance: "0.15"
     
     routes:
       enabled: true
       count: 2
       updateFrequencyMin: 180  # 3 minutes
       updateFrequencyMax: 600  # 10 minutes
-      deleteRecreateChance: 0.1
+      deleteRecreateChance: "0.1"
     
     imageStreams:
       enabled: true
       count: 2
       updateFrequencyMin: 600  # 10 minutes
       updateFrequencyMax: 1800 # 30 minutes
-      deleteRecreateChance: 0.05
+      deleteRecreateChance: "0.05"
     
     buildConfigs:
       enabled: true
       count: 1
       updateFrequencyMin: 900  # 15 minutes
       updateFrequencyMax: 2700 # 45 minutes
-      deleteRecreateChance: 0.05
+      deleteRecreateChance: "0.05"
     
     events:
       enabled: true

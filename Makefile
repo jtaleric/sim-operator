@@ -68,6 +68,32 @@ test: manifests generate fmt vet envtest ## Run tests.
 test-e2e:
 	go test ./test/e2e/ -v -ginkgo.v
 
+.PHONY: test-api-validation
+test-api-validation: ## Run API validation unit tests
+	go test -v ./api/v1 -run TestScaleLoadConfig_Validate
+
+.PHONY: test-validation-comprehensive
+test-validation-comprehensive: ## Run comprehensive validation tests
+	go test -v ./api/v1 -run TestScaleLoadConfig_ValidateAPIRateConfiguration
+
+.PHONY: test-all
+test-all: test test-api-validation ## Run all tests including API validation
+
+.PHONY: validate-configs
+validate-configs: ## Validate sample configurations (requires yq)
+	@echo "🔍 Validating sample configurations..."
+	@if ! command -v yq > /dev/null 2>&1; then \
+		echo "❌ yq is required but not installed. Install with: wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && chmod +x /usr/local/bin/yq"; \
+		exit 1; \
+	fi
+	@for file in config/samples/*.yaml test/validation/*.yaml; do \
+		if [ -f "$$file" ]; then \
+			echo "Checking $$file..."; \
+			yq eval '.' "$$file" > /dev/null && echo "✅ $$file has valid YAML syntax" || (echo "❌ $$file has invalid YAML syntax" && exit 1); \
+		fi \
+	done
+	@echo "✅ All sample configurations are valid"
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter & yamllint
 	$(GOLANGCI_LINT) run

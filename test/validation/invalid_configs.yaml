@@ -1,0 +1,161 @@
+# Test cases for invalid API rate configurations
+# These should be rejected by the webhook validation
+
+---
+# INVALID: Both static and per-node rates set
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-both-rates
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRateStatic: 5000      # ❌ This should be rejected
+    apiCallRatePerNode: 100      # ❌ Both fields set
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: All three fields set (including deprecated)
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-all-three-rates
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRate: 20              # ❌ Deprecated field
+    apiCallRateStatic: 5000      # ❌ This should be rejected
+    apiCallRatePerNode: 100      # ❌ All three fields set
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: Static and deprecated fields set
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-static-and-deprecated
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRate: 20              # ❌ Deprecated field
+    apiCallRateStatic: 5000      # ❌ Both deprecated and static set
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: Per-node and deprecated fields set
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-per-node-and-deprecated
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRate: 20              # ❌ Deprecated field
+    apiCallRatePerNode: 100      # ❌ Both deprecated and per-node set
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: Negative static rate
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-negative-static
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRateStatic: -1000     # ❌ Negative value
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: Zero per-node rate
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-zero-per-node
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRatePerNode: 0        # ❌ Zero value
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true
+
+---
+# INVALID: Negative deprecated rate
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: invalid-negative-deprecated
+spec:
+  enabled: true
+  kwokNodeSelector:
+    type: "kwok"
+  loadProfile:
+    profile: "production"
+    apiCallRate: -5              # ❌ Negative deprecated field
+  namespaceConfig:
+    namespacePrefix: "test-"
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+  cleanupConfig:
+    enabled: true

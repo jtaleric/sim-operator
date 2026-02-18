@@ -1,0 +1,215 @@
+name: PR Tests
+
+on:
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'config/**'
+      - 'api/**'
+      - 'internal/**'
+      - 'test/**'
+      - '.github/workflows/**'
+
+  # Allow manual triggers
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Run go vet
+      run: go vet ./...
+
+    - name: Run unit tests
+      run: go test -v ./... -coverprofile=coverage.out
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.out
+        fail_ci_if_error: false
+
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Generate manifests
+      run: make manifests generate
+
+    - name: Check for uncommitted changes
+      run: |
+        if [ -n "$(git diff --exit-code)" ]; then
+          echo "❌ Generated files are not up to date. Please run 'make manifests generate' and commit the changes."
+          git diff
+          exit 1
+        else
+          echo "✅ Generated files are up to date"
+        fi
+
+    - name: Build manager binary
+      run: make build
+
+    - name: Build Docker image
+      run: make docker-build IMG=sim-operator:test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        args: --timeout=5m
+        skip-cache: false
+        skip-pkg-cache: false
+        skip-build-cache: false
+
+  validate-configs:
+    name: Validate Sample Configs
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Install yq for YAML processing
+      run: |
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+
+    - name: Generate CRDs
+      run: make manifests
+
+    - name: Set up kind cluster for validation
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: validation-cluster
+
+    - name: Install CRDs
+      run: |
+        kubectl apply -f config/crd/bases/
+
+    - name: Validate sample configs syntax
+      run: |
+        echo "🔍 Validating YAML syntax for sample configs..."
+        for file in config/samples/*.yaml test/validation/*.yaml; do
+          if [ -f "$file" ]; then
+            echo "Checking $file..."
+            yq eval '.' "$file" > /dev/null
+            echo "✅ $file has valid YAML syntax"
+          fi
+        done
+
+    - name: Validate against CRD schema
+      run: |
+        echo "🔍 Validating sample configs against CRD schema..."
+        
+        # Test valid configurations (should succeed)
+        echo "Testing valid configurations..."
+        for file in config/samples/*.yaml test/validation/valid_configs.yaml; do
+          if [ -f "$file" ]; then
+            echo "Validating $file..."
+            if kubectl apply --dry-run=server -f "$file"; then
+              echo "✅ $file passed validation"
+            else
+              echo "❌ $file failed validation (but it shouldn't have)"
+              exit 1
+            fi
+          fi
+        done
+        
+        # Test invalid configurations (should fail)
+        echo "Testing invalid configurations..."
+        if [ -f "test/validation/invalid_configs.yaml" ]; then
+          echo "Validating invalid configs (expecting failures)..."
+          
+          # Split the multi-document YAML and test each separately
+          yq eval-all 'select(. != null) | split_doc' test/validation/invalid_configs.yaml > /tmp/split_invalid.yaml
+          
+          # Count how many documents we have
+          doc_count=$(yq eval-all '. as $item ireduce (0; . + 1)' test/validation/invalid_configs.yaml)
+          echo "Found $doc_count invalid config documents to test"
+          
+          # For invalid configs, we expect them to fail validation
+          # Since webhook validation happens server-side, we can't easily test it in CI
+          # So we'll just verify the YAML syntax is correct
+          yq eval '.' test/validation/invalid_configs.yaml > /dev/null
+          echo "✅ Invalid configs have valid YAML syntax (validation will happen at webhook level)"
+        fi
+

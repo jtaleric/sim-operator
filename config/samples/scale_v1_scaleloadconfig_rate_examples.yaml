@@ -1,0 +1,70 @@
+# Example demonstrating both API rate limiting approaches
+# Use only one at a time - uncomment the approach you want to test
+
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: rate-limit-examples
+spec:
+  enabled: true
+  
+  kwokNodeSelector:
+    type: "kwok"
+  
+  loadProfile:
+    profile: "production"
+    namespacesPerNode: "0.6"
+    resourcesPerNamespace: 5
+    
+    # APPROACH 1: Static Rate Limiting (RECOMMENDED for testing)
+    # Fixed total API calls per minute regardless of cluster size
+    # Good for: Testing specific API server limits, predictable load
+    apiCallRateStatic: 5000  # Always 5000 calls/minute total (83/second)
+    
+    # APPROACH 2: Per-Node Rate Limiting (RECOMMENDED for simulation)
+    # API calls scale with the number of nodes in the cluster  
+    # Good for: Realistic workload simulation, cluster scaling tests
+    # apiCallRatePerNode: 100  # 100 calls/minute/node
+    # Examples:
+    #   - 100 nodes = 10,000 calls/minute (167/second)
+    #   - 500 nodes = 50,000 calls/minute (833/second) 
+    #   - 1000 nodes = 100,000 calls/minute (1667/second)
+    
+    # LEGACY FIELD (deprecated, use apiCallRatePerNode instead)
+    # apiCallRate: 20  # Treated as per-node rate for backward compatibility
+
+  namespaceConfig:
+    namespacePrefix: "rate-test-"
+    labels:
+      scale.openshift.io/load-test: "true"
+      example: "rate-limiting"
+
+  annotationChurn:
+    enabled: false  # Disable to focus on API rate testing
+
+  resourceChurn:
+    configMaps:
+      enabled: true
+      count: 1
+    
+    secrets:
+      enabled: true
+      count: 1
+    
+    routes:
+      enabled: false  # Disable complex resources for cleaner testing
+      
+    imageStreams:
+      enabled: false
+      
+    buildConfigs:
+      enabled: false
+    
+    events:
+      enabled: true
+      eventsPerNodePerHour: 30
+
+  cleanupConfig:
+    enabled: true
+    gracefulDeletes: false
+    cleanupDelaySeconds: 10
