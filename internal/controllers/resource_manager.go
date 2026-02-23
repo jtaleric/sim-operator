@@ -970,6 +970,9 @@ func (r *ScaleLoadConfigReconciler) checkAPIRateLimit(config *scalev1.ScaleLoadC
 		return false
 	}
 
+	// Reserve the API calls by incrementing the counter
+	r.apiCallCounter += requestedCalls
+
 	return true
 }
 
