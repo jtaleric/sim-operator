@@ -53,14 +53,18 @@ spec:
           periodSeconds: 10
         resources:
           limits:
+            cpu: 2000m
+            memory: 2Gi
+          requests:
             cpu: 500m
             memory: 512Mi
-          requests:
-            cpu: 100m
-            memory: 128Mi
         env:
         - name: METRICS_ADDR
           value: "0.0.0.0:8080"
+        - name: GOMAXPROCS
+          value: "4"
+        - name: GOMEMLIMIT
+          value: "1800MiB"
         ports:
         - containerPort: 8080
           name: metrics
