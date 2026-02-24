@@ -114,6 +114,54 @@ loadProfile:
   apiCallRate: 50           # Aggressive API calls
 ```
 
+## API Rate Limiting
+
+The operator implements per-minute API rate limiting to prevent overwhelming the Kubernetes API server during load generation.
+
+### Rate Limit Calculation
+
+The operator estimates API calls needed for each reconcile cycle:
+
+```
+Estimated API Calls = Target Namespaces × 5 calls per namespace
+Target Namespaces = KWOK Nodes × namespacesPerNode
+```
+
+**Example with 500 KWOK nodes:**
+- Target Namespaces: `500 × 0.6 = 300`
+- Estimated API Calls: `300 × 5 = 1500 calls`
+
+### Rate Limit Configuration
+
+Configure API rate limits using these fields (in priority order):
+
+```yaml
+loadProfile:
+  # Option 1: Static rate (recommended) - fixed calls per minute
+  apiCallRateStatic: 2000
+  
+  # Option 2: Per-node rate - scales with KWOK node count  
+  apiCallRatePerNode: 20
+  
+  # Option 3: Deprecated - treat as per-node rate
+  apiCallRate: 20
+```
+
+### Rate Limiting Behavior
+
+- **Counter Reset**: API call counter resets every 60 seconds
+- **Pre-flight Check**: Operator checks estimated calls against limit before starting operations
+- **Backoff**: When rate limit reached, operator skips the cycle and waits 1 minute
+- **Logging**: Rate limit events logged at DEBUG level with current counter and estimated calls
+
+**Example rate limit log:**
+```
+Rate limit reached, skipping resource management this cycle
+{"estimatedCalls": 1500, "currentCounter": 916}
+```
+
+This indicates 916 API calls were already made this minute, and the requested 1500 additional calls would exceed the configured limit.
+
 ## Configuration Examples
 
 ### Custom Resource Pattern
