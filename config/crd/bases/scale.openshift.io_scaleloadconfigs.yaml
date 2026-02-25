@@ -368,6 +368,153 @@ spec:
                         format: int32
                         type: integer
                     type: object
+                  namespaces:
+                    description: Namespaces controls namespace churn patterns
+                    properties:
+                      churnIntervalSeconds:
+                        default: 300
+                        description: ChurnIntervalSeconds minimum time between namespace
+                          churn cycles
+                        format: int32
+                        minimum: 60
+                        type: integer
+                      churnPercentage:
+                        default: 5
+                        description: ChurnPercentage percentage of namespaces to churn
+                          each cycle (1-100)
+                        format: int32
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: Enabled controls whether namespace churn is active
+                        type: boolean
+                      preserveOldestNamespaces:
+                        default: 10
+                        description: PreserveOldestNamespaces prevents churning the
+                          oldest N namespaces for stability
+                        format: int32
+                        type: integer
+                    type: object
+                  pods:
+                    description: Pods controls Pod resource patterns
+                    properties:
+                      count:
+                        default: 5
+                        description: Count per namespace
+                        format: int32
+                        type: integer
+                      deleteRecreateChance:
+                        default: "0.15"
+                        description: DeleteRecreateChance probability of delete+recreate
+                          vs update (0.0-1.0)
+                        pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled controls whether pod simulation is active
+                        type: boolean
+                      namespaceInterval:
+                        default: 1
+                        description: |-
+                          NamespaceInterval controls how often pods are created relative to namespaces
+                          For example, interval=2 means create pods in every 2nd namespace
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      nodeAffinityStrategy:
+                        default: round-robin
+                        description: NodeAffinityStrategy controls how pods are assigned
+                          to KWOK nodes
+                        enum:
+                        - round-robin
+                        - random
+                        - sticky
+                        type: string
+                      tolerateKwokTaint:
+                        default: true
+                        description: TolerateKwokTaint allows pods to be scheduled
+                          on KWOK nodes
+                        type: boolean
+                      updateFrequencyMax:
+                        default: 600
+                        description: UpdateFrequencyMax maximum time between pod updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      updateFrequencyMin:
+                        default: 120
+                        description: UpdateFrequencyMin minimum time between pod updates
+                          (seconds)
+                        format: int32
+                        type: integer
+                      workloadTypes:
+                        description: WorkloadTypes defines types of workloads to simulate
+                        items:
+                          description: PodWorkloadType defines different types of
+                            simulated workloads
+                          properties:
+                            annotations:
+                              additionalProperties:
+                                type: string
+                              description: Annotations to apply to pods of this workload
+                                type
+                              type: object
+                            image:
+                              default: registry.redhat.io/ubi8/ubi-minimal:latest
+                              description: Image to use for the pod
+                              type: string
+                            labels:
+                              additionalProperties:
+                                type: string
+                              description: Labels to apply to pods of this workload
+                                type
+                              type: object
+                            name:
+                              description: Name of the workload type
+                              type: string
+                            resources:
+                              description: Resources defines resource requests and
+                                limits
+                              properties:
+                                cpuLimit:
+                                  default: 500m
+                                  description: CPU limits
+                                  type: string
+                                cpuRequest:
+                                  default: 100m
+                                  description: CPU requests
+                                  type: string
+                                memoryLimit:
+                                  default: 256Mi
+                                  description: Memory limits
+                                  type: string
+                                memoryRequest:
+                                  default: 128Mi
+                                  description: Memory requests
+                                  type: string
+                              type: object
+                            restartPolicy:
+                              default: Always
+                              description: RestartPolicy for the pod
+                              enum:
+                              - Always
+                              - OnFailure
+                              - Never
+                              type: string
+                            weight:
+                              description: Weight for random selection (higher = more
+                                frequent)
+                              format: int32
+                              type: integer
+                          required:
+                          - name
+                          - resources
+                          - weight
+                          type: object
+                        type: array
+                    type: object
                   routes:
                     description: Routes controls Route resource patterns
                     properties:
@@ -606,6 +753,10 @@ spec:
                     description: ImageStreams count
                     format: int32
                     type: integer
+                  pods:
+                    description: Pods count
+                    format: int32
+                    type: integer
                   routes:
                     description: Routes count
                     format: int32
@@ -619,6 +770,7 @@ spec:
                 - configMaps
                 - events
                 - imageStreams
+                - pods
                 - routes
                 - secrets
                 type: object

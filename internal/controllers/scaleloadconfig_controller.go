@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -40,9 +41,14 @@ type ScaleLoadConfigReconciler struct {
 	lastReconcileTime time.Time
 	resourceManagers  map[string]*ResourceManager
 
-	// API rate limiting
-	apiCallCounter     int32
-	lastRateLimitReset time.Time
+	// Simplified API rate control
+	targetAPICallsPerMinute int32
+	apiCallsThisMinute      int32
+	lastRateReset           time.Time
+
+	// Cumulative API call tracking for metrics
+	totalAPICallsMade int64
+	lastMetricsReset  time.Time
 }
 
 // ResourceManager handles lifecycle of resources for a specific namespace
@@ -62,6 +68,7 @@ type ResourceManager struct {
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=image.openshift.io,resources=imagestreams,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=build.openshift.io,resources=buildconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -124,6 +131,7 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "Failed to get KWOK nodes")
 		return ctrl.Result{}, err
 	}
+	r.recordAPICall(config, 1) // List nodes operation
 
 	log.V(1).Info("Found KWOK nodes", "count", len(kwokNodes))
 	r.KwokNodeCount.Set(float64(len(kwokNodes)))
@@ -141,14 +149,8 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log.V(1).Info("Target namespace calculation", "kwokNodes", len(kwokNodes), "targetNamespaces", targetNamespaces)
 
-	// Check API rate limit before proceeding with resource management
-	estimatedAPICalls := int32(targetNamespaces * 5) // Rough estimate: 5 API calls per namespace
-	if !r.checkAPIRateLimit(config, estimatedAPICalls, len(kwokNodes)) {
-		log.V(1).Info("Rate limit reached, skipping resource management this cycle",
-			"estimatedCalls", estimatedAPICalls,
-			"currentCounter", r.apiCallCounter)
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+	// Note: Removed restrictive pre-flight API rate limiting to allow actual configured rates
+	// Resource managers will handle rate limiting individually with more accurate tracking
 
 	// Manage namespaces and resources
 	log.V(1).Info("Starting load resource management",
@@ -189,6 +191,16 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.ErrorCount.Inc()
 		return ctrl.Result{}, err
 	}
+
+	// Perform namespace churn if enabled
+	if config.Spec.ResourceChurn.Namespaces.Enabled {
+		if err := r.performNamespaceChurn(ctx, config); err != nil {
+			log.Error(err, "Failed to perform namespace churn")
+		}
+	}
+
+	// Perform additional API calls to meet target rate if needed
+	r.ensureAPICallRate(ctx, config, len(kwokNodes))
 
 	// Calculate next reconcile interval based on load profile
 	nextReconcile := r.calculateReconcileInterval(config)
@@ -252,6 +264,7 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	if err != nil {
 		return 0, resourceCounts, fmt.Errorf("failed to get managed namespaces: %w", err)
 	}
+	r.recordAPICall(config, 1) // List namespaces operation
 
 	currentNamespaceCount := len(existingNamespaces)
 	log.V(1).Info("Namespace management starting",
@@ -297,23 +310,8 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to get current namespaces: %w", err)
 	}
 
-	// Manage resources within namespaces
-	for _, ns := range currentNamespaces {
-		// Check if namespace is ready before managing resources
-		if !r.isNamespaceReady(ctx, ns.Name) {
-			log.V(1).Info("Namespace not ready yet, skipping resource management", "namespace", ns.Name)
-			continue
-		}
-
-		if counts, err := r.manageNamespaceResources(ctx, config, ns); err != nil {
-			log.Error(err, "Failed to manage namespace resources", "namespace", ns.Name)
-		} else {
-			// Aggregate resource counts
-			for resourceType, count := range counts {
-				resourceCounts[resourceType] += count
-			}
-		}
-	}
+	// Manage resources within namespaces - PARALLEL PROCESSING
+	resourceCounts = r.manageNamespacesParallel(ctx, config, currentNamespaces)
 
 	// Calculate total resource operations
 	totalResourceOperations := 0
@@ -409,6 +407,7 @@ func (r *ScaleLoadConfigReconciler) createNamespaces(ctx context.Context, config
 		if err := r.Create(ctx, namespace); err != nil {
 			return fmt.Errorf("failed to create namespace %s: %w", namespaceName, err)
 		}
+		r.recordAPICall(config, 1) // Create namespace operation
 
 		log.V(1).Info("Created namespace", "name", namespaceName, "associatedNode", associatedNode)
 
@@ -452,6 +451,7 @@ func (r *ScaleLoadConfigReconciler) deleteNamespaces(ctx context.Context, config
 				return fmt.Errorf("failed to delete namespace %s: %w", ns.Name, err)
 			}
 		}
+		r.recordAPICall(config, 1) // Delete namespace operation
 
 		// Clean up resource manager
 		delete(r.resourceManagers, ns.Name)
@@ -466,17 +466,371 @@ func (r *ScaleLoadConfigReconciler) deleteNamespaces(ctx context.Context, config
 func (r *ScaleLoadConfigReconciler) calculateReconcileInterval(config *scalev1.ScaleLoadConfig) time.Duration {
 	switch config.Spec.LoadProfile.Profile {
 	case "development":
-		return 2 * time.Minute // Less frequent for light load
+		return 30 * time.Second // Less frequent for light load
 	case "staging":
-		return 90 * time.Second // Moderate frequency
+		return 15 * time.Second // Moderate frequency
 	case "extreme":
-		return 30 * time.Second // High frequency for heavy load
+		return 5 * time.Second // High frequency for heavy load
 	default: // "production"
-		return 60 * time.Second // Standard frequency
+		return 10 * time.Second // Much more aggressive to spread API call load
 	}
 }
 
+// ensureAPICallRate makes additional API calls to meet the configured target rate
+func (r *ScaleLoadConfigReconciler) ensureAPICallRate(ctx context.Context, config *scalev1.ScaleLoadConfig, nodeCount int) {
+	now := time.Now()
+
+	// Calculate target rate
+	effectiveRate, _ := r.getEffectiveAPIRate(config, nodeCount)
+	r.targetAPICallsPerMinute = effectiveRate
+
+	// Reset counter every minute
+	if r.lastRateReset.IsZero() || now.Sub(r.lastRateReset) >= time.Minute {
+		r.apiCallsThisMinute = 0
+		r.lastRateReset = now
+	}
+
+	// Calculate how many more API calls needed this minute
+	elapsedSeconds := now.Sub(r.lastRateReset).Seconds()
+	expectedCallsByNow := int32(float64(r.targetAPICallsPerMinute) * (elapsedSeconds / 60.0))
+	callsNeeded := expectedCallsByNow - r.apiCallsThisMinute
+
+	if callsNeeded <= 0 {
+		return // Already meeting or exceeding target
+	}
+
+	log := r.Log.WithName("rate-controller")
+	log.V(1).Info("Making additional API calls to meet target",
+		"target", r.targetAPICallsPerMinute,
+		"currentThisMinute", r.apiCallsThisMinute,
+		"expected", expectedCallsByNow,
+		"needed", callsNeeded)
+
+	// Make additional API calls using simple operations
+	r.makeAdditionalAPICalls(ctx, config, callsNeeded)
+}
+
+// makeAdditionalAPICalls performs simple API operations to meet rate target
+func (r *ScaleLoadConfigReconciler) makeAdditionalAPICalls(ctx context.Context, config *scalev1.ScaleLoadConfig, count int32) {
+	log := r.Log.WithName("rate-controller")
+
+	// Remove the artificial 100 call limit - we need to hit the target!
+	// Use batches to avoid overwhelming the API server
+	batchSize := int32(500) // Process in batches of 500
+	totalCalls := count
+
+	log.Info("Making additional API calls", "needed", count, "batchSize", batchSize)
+
+	for remaining := totalCalls; remaining > 0; {
+		currentBatch := remaining
+		if currentBatch > batchSize {
+			currentBatch = batchSize
+		}
+
+		// Make batch of simple API calls
+		for i := int32(0); i < currentBatch; i++ {
+			// Use simple List operations with small limits
+			namespaceList := &corev1.NamespaceList{}
+			if err := r.List(ctx, namespaceList, &client.ListOptions{Limit: 1}); err == nil {
+				r.recordAPICall(config, 1)
+			} else {
+				log.V(2).Info("API call failed", "error", err.Error())
+			}
+		}
+
+		remaining -= currentBatch
+		log.V(1).Info("Completed batch", "batchSize", currentBatch, "remaining", remaining)
+	}
+
+	log.Info("Additional API calls completed", "totalRequested", count)
+}
+
+// performNamespaceChurn deletes and recreates namespaces to generate API churn
+func (r *ScaleLoadConfigReconciler) performNamespaceChurn(ctx context.Context, config *scalev1.ScaleLoadConfig) error {
+	log := r.Log.WithName("namespace-churn")
+
+	// Check if enough time has passed since last churn
+	if !r.lastReconcileTime.IsZero() && time.Since(r.lastReconcileTime) < time.Duration(config.Spec.ResourceChurn.Namespaces.ChurnIntervalSeconds)*time.Second {
+		return nil // Too soon to churn
+	}
+
+	// Get existing managed namespaces
+	existingNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return fmt.Errorf("failed to get existing namespaces for churn: %w", err)
+	}
+	r.recordAPICall(config, 1) // List namespaces operation
+
+	if len(existingNamespaces) == 0 {
+		log.V(1).Info("No namespaces to churn")
+		return nil
+	}
+
+	// Calculate how many namespaces to churn
+	churnPercentage := config.Spec.ResourceChurn.Namespaces.ChurnPercentage
+	if churnPercentage == 0 {
+		churnPercentage = 5 // Default 5%
+	}
+
+	namespaceCount := len(existingNamespaces)
+	namespacesToChurn := int((int64(namespaceCount) * int64(churnPercentage)) / 100)
+	if namespacesToChurn < 1 && namespaceCount > 0 {
+		namespacesToChurn = 1 // Always churn at least one if we have namespaces
+	}
+
+	// Preserve oldest namespaces for stability
+	preserveCount := config.Spec.ResourceChurn.Namespaces.PreserveOldestNamespaces
+	if preserveCount == 0 {
+		preserveCount = 10
+	}
+
+	if namespacesToChurn >= namespaceCount-int(preserveCount) {
+		namespacesToChurn = namespaceCount - int(preserveCount)
+		if namespacesToChurn < 0 {
+			namespacesToChurn = 0
+		}
+	}
+
+	if namespacesToChurn == 0 {
+		log.V(1).Info("No namespaces available for churning after preservation rules",
+			"total", namespaceCount, "preserve", preserveCount)
+		return nil
+	}
+
+	log.Info("Starting namespace churn",
+		"totalNamespaces", namespaceCount,
+		"churnPercentage", churnPercentage,
+		"namespacesToChurn", namespacesToChurn,
+		"preserveCount", preserveCount)
+
+	// Select namespaces to churn (skip preserved ones)
+	candidateNamespaces := existingNamespaces[preserveCount:]
+	if len(candidateNamespaces) < namespacesToChurn {
+		namespacesToChurn = len(candidateNamespaces)
+	}
+
+	// Randomly select namespaces to churn from candidates
+	churned := 0
+	for i := 0; i < namespacesToChurn && i < len(candidateNamespaces); i++ {
+		ns := candidateNamespaces[i]
+
+		log.V(1).Info("Churning namespace", "namespace", ns.Name)
+
+		// Delete the namespace
+		if err := r.Delete(ctx, &ns); err != nil {
+			log.Error(err, "Failed to delete namespace for churn", "namespace", ns.Name)
+			continue
+		}
+		r.recordAPICall(config, 1) // Delete operation
+
+		// Create a replacement namespace immediately
+		newNamespace := r.generateNamespace(config, ns.Name+"-new")
+		if err := r.Create(ctx, newNamespace); err != nil {
+			log.Error(err, "Failed to create replacement namespace", "namespace", newNamespace.Name)
+			continue
+		}
+		r.recordAPICall(config, 1) // Create operation
+
+		churned++
+	}
+
+	log.Info("Namespace churn completed",
+		"requested", namespacesToChurn,
+		"churned", churned,
+		"apiCalls", churned*2) // 2 API calls per churn (delete + create)
+
+	return nil
+}
+
+// generateNamespace creates a new namespace with standard labels and config
+func (r *ScaleLoadConfigReconciler) generateNamespace(config *scalev1.ScaleLoadConfig, namespaceName string) *corev1.Namespace {
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: namespaceName,
+			Labels: map[string]string{
+				"scale.openshift.io/managed-by": config.Name,
+				"scale.openshift.io/created-by": "sim-operator",
+				"scale.openshift.io/churned":    "true", // Mark as churned namespace
+				"scale.openshift.io/churn-time": fmt.Sprintf("%d", time.Now().Unix()),
+			},
+		},
+	}
+
+	// Add custom labels and annotations
+	if config.Spec.NamespaceConfig.Labels != nil {
+		for k, v := range config.Spec.NamespaceConfig.Labels {
+			namespace.Labels[k] = v
+		}
+	}
+
+	if config.Spec.NamespaceConfig.Annotations != nil {
+		if namespace.Annotations == nil {
+			namespace.Annotations = make(map[string]string)
+		}
+		for k, v := range config.Spec.NamespaceConfig.Annotations {
+			namespace.Annotations[k] = v
+		}
+	}
+
+	return namespace
+}
+
 // generateRandomString creates a random string for unique naming
+
+// manageNamespacesParallel processes multiple namespaces concurrently for better performance
+func (r *ScaleLoadConfigReconciler) manageNamespacesParallel(ctx context.Context, config *scalev1.ScaleLoadConfig, namespaces []corev1.Namespace) map[string]int {
+	log := r.Log.WithName("parallel-manager")
+
+	// Configure concurrency based on load profile and number of namespaces
+	maxConcurrency := r.calculateOptimalConcurrency(config, len(namespaces))
+	log.Info("Starting parallel namespace processing",
+		"namespaces", len(namespaces),
+		"maxConcurrency", maxConcurrency)
+
+	// Create semaphore for controlling concurrency
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	// Results collection
+	resultsChan := make(chan namespaceResult, len(namespaces))
+	var wg sync.WaitGroup
+
+	// Start time for performance measurement
+	startTime := time.Now()
+
+	// Process namespaces in parallel
+	for _, ns := range namespaces {
+		// Check if namespace is ready before starting goroutine
+		if !r.isNamespaceReady(ctx, ns.Name) {
+			log.V(1).Info("Namespace not ready, skipping", "namespace", ns.Name)
+			continue
+		}
+
+		wg.Add(1)
+		go func(namespace corev1.Namespace) {
+			defer wg.Done()
+
+			// Acquire semaphore (rate limiting)
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// Process single namespace
+			r.processNamespaceWithResult(ctx, config, namespace, resultsChan)
+		}(ns)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(resultsChan)
+
+	// Aggregate results from all namespaces
+	aggregatedCounts := make(map[string]int)
+	var totalAPIcalls, successfulNamespaces, failedNamespaces int32
+
+	for result := range resultsChan {
+		if result.err != nil {
+			log.Error(result.err, "Failed to manage namespace resources", "namespace", result.namespace)
+			failedNamespaces++
+		} else {
+			successfulNamespaces++
+			// Aggregate resource counts
+			for resourceType, count := range result.resourceCounts {
+				aggregatedCounts[resourceType] += count
+				log.V(2).Info("Aggregating resource count",
+					"namespace", result.namespace,
+					"resourceType", resourceType,
+					"count", count,
+					"newTotal", aggregatedCounts[resourceType])
+			}
+			totalAPIcalls += result.apiCalls
+		}
+	}
+
+	duration := time.Since(startTime)
+	namespacesPerSecond := float64(len(namespaces)) / duration.Seconds()
+
+	log.Info("Parallel namespace processing completed",
+		"duration", duration,
+		"totalNamespaces", len(namespaces),
+		"successful", successfulNamespaces,
+		"failed", failedNamespaces,
+		"concurrency", maxConcurrency,
+		"namespacesPerSecond", fmt.Sprintf("%.1f", namespacesPerSecond),
+		"totalAPIcalls", totalAPIcalls,
+		"aggregatedCounts", aggregatedCounts)
+
+	// Log individual resource type totals for debugging
+	log.Info("Final aggregated resource counts for status update",
+		"configMaps", aggregatedCounts["configMaps"],
+		"secrets", aggregatedCounts["secrets"],
+		"pods", aggregatedCounts["pods"],
+		"routes", aggregatedCounts["routes"],
+		"imageStreams", aggregatedCounts["imageStreams"],
+		"buildConfigs", aggregatedCounts["buildConfigs"],
+		"events", aggregatedCounts["events"])
+
+	return aggregatedCounts
+}
+
+// namespaceResult holds the result of processing a single namespace
+type namespaceResult struct {
+	namespace      string
+	resourceCounts map[string]int
+	apiCalls       int32
+	err            error
+}
+
+// processNamespaceWithResult processes a single namespace and sends results to channel
+func (r *ScaleLoadConfigReconciler) processNamespaceWithResult(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace corev1.Namespace, resultsChan chan<- namespaceResult) {
+	startTime := time.Now()
+
+	counts, err := r.manageNamespaceResources(ctx, config, namespace)
+
+	duration := time.Since(startTime)
+	log := r.Log.WithName("namespace-worker")
+	log.V(2).Info("Namespace processing completed",
+		"namespace", namespace.Name,
+		"duration", duration,
+		"resourceCounts", counts,
+		"success", err == nil)
+
+	resultsChan <- namespaceResult{
+		namespace:      namespace.Name,
+		resourceCounts: counts,
+		apiCalls:       0, // TODO: Track API calls per namespace
+		err:            err,
+	}
+}
+
+// calculateOptimalConcurrency determines the optimal number of concurrent goroutines
+func (r *ScaleLoadConfigReconciler) calculateOptimalConcurrency(config *scalev1.ScaleLoadConfig, namespaceCount int) int {
+	// Base concurrency on load profile
+	var baseConcurrency int
+	switch config.Spec.LoadProfile.Profile {
+	case "development":
+		baseConcurrency = 10 // Conservative for light load
+	case "staging":
+		baseConcurrency = 25 // Moderate parallelism
+	case "extreme":
+		baseConcurrency = 100 // Aggressive parallelism
+	default: // "production"
+		baseConcurrency = 50 // Balanced approach
+	}
+
+	// Adjust based on number of namespaces
+	if namespaceCount < baseConcurrency {
+		// Don't create more goroutines than namespaces
+		return namespaceCount
+	}
+
+	// Cap maximum concurrency to avoid overwhelming API server
+	maxConcurrency := 100
+	if baseConcurrency > maxConcurrency {
+		return maxConcurrency
+	}
+
+	return baseConcurrency
+}
+
 // parseFloat parses a string as float64
 func parseFloat(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)

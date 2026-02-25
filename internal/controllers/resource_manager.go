@@ -7,6 +7,7 @@ import (
 	"fmt"
 	mathrand "math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	buildv1 "github.com/openshift/api/build/v1"
@@ -14,6 +15,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -45,78 +47,12 @@ func (r *ScaleLoadConfigReconciler) manageNamespaceResources(ctx context.Context
 		"routesEnabled", config.Spec.ResourceChurn.Routes.Enabled,
 		"imagestreamsEnabled", config.Spec.ResourceChurn.ImageStreams.Enabled,
 		"buildconfigsEnabled", config.Spec.ResourceChurn.BuildConfigs.Enabled,
-		"eventsEnabled", config.Spec.ResourceChurn.Events.Enabled)
+		"eventsEnabled", config.Spec.ResourceChurn.Events.Enabled,
+		"podsEnabled", config.Spec.ResourceChurn.Pods.Enabled)
 
-	// For now, remove per-namespace rate limiting - apply at higher level
-	// The issue is we're doing too many API calls, not that we need to limit each namespace
-
-	// Manage each resource type
-	if config.Spec.ResourceChurn.ConfigMaps.Enabled {
-		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ConfigMaps.NamespaceInterval) {
-			count, err := r.manageConfigMaps(ctx, config, namespace.Name, config.Spec.ResourceChurn.ConfigMaps.Count)
-			if err != nil {
-				log.Error(err, "Failed to manage ConfigMaps")
-			} else {
-				resourceCounts["configMaps"] = int(count)
-			}
-		}
-	}
-
-	if config.Spec.ResourceChurn.Secrets.Enabled {
-		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Secrets.NamespaceInterval) {
-			count, err := r.manageSecrets(ctx, config, namespace.Name, config.Spec.ResourceChurn.Secrets.Count)
-			if err != nil {
-				log.Error(err, "Failed to manage Secrets")
-			} else {
-				resourceCounts["secrets"] = int(count)
-			}
-		}
-	}
-
-	if config.Spec.ResourceChurn.Routes.Enabled {
-		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Routes.NamespaceInterval) {
-			count, err := r.manageRoutes(ctx, config, namespace.Name, config.Spec.ResourceChurn.Routes.Count)
-			if err != nil {
-				log.Error(err, "Failed to manage Routes")
-			} else {
-				resourceCounts["routes"] = int(count)
-			}
-		} else {
-			log.V(2).Info("Skipping Routes creation based on namespace interval", "interval", config.Spec.ResourceChurn.Routes.NamespaceInterval)
-		}
-	}
-
-	if config.Spec.ResourceChurn.ImageStreams.Enabled {
-		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ImageStreams.NamespaceInterval) {
-			count, err := r.manageImageStreams(ctx, config, namespace.Name, config.Spec.ResourceChurn.ImageStreams.Count)
-			if err != nil {
-				log.Error(err, "Failed to manage ImageStreams")
-			} else {
-				resourceCounts["imageStreams"] = int(count)
-			}
-		}
-	}
-
-	if config.Spec.ResourceChurn.BuildConfigs.Enabled {
-		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.BuildConfigs.NamespaceInterval) {
-			count, err := r.manageBuildConfigs(ctx, config, namespace.Name, config.Spec.ResourceChurn.BuildConfigs.Count)
-			if err != nil {
-				log.Error(err, "Failed to manage BuildConfigs")
-			} else {
-				resourceCounts["buildConfigs"] = int(count)
-			}
-		}
-	}
-
-	if config.Spec.ResourceChurn.Events.Enabled {
-		// Events don't have namespace interval as they're not created per namespace in the same way
-		count, err := r.manageEvents(ctx, config, namespace.Name)
-		if err != nil {
-			log.Error(err, "Failed to manage Events")
-		} else {
-			resourceCounts["events"] = int(count)
-		}
-	}
+	// Use parallel resource management for optimal performance
+	// This processes all resource types concurrently within the namespace
+	resourceCounts = r.manageResourceTypesParallel(ctx, config, namespace)
 
 	duration := time.Since(startTime)
 
@@ -285,6 +221,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	if err := r.List(ctx, secretList, listOpts); err != nil {
 		return 0, fmt.Errorf("failed to list Secrets: %w", err)
 	}
+	r.recordAPICall(config, 1) // List operation
 
 	currentCount := len(secretList.Items)
 	var created, deleted, apiCalls int32
@@ -301,6 +238,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 				log.Error(err, "Failed to create Secret", "name", secret.Name, "created", created)
 				return int32(currentCount) + created, fmt.Errorf("failed to create Secret: %w", err)
 			}
+			r.recordAPICall(config, 1) // Create operation
 			created++
 			apiCalls++
 		}
@@ -315,6 +253,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 				log.Error(err, "Failed to delete Secret", "name", secretList.Items[i].Name, "deleted", deleted)
 				return int32(currentCount) - deleted, fmt.Errorf("failed to delete Secret: %w", err)
 			}
+			r.recordAPICall(config, 1) // Delete operation
 			deleted++
 			apiCalls++
 		}
@@ -383,6 +322,7 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	if err := r.List(ctx, routeList, listOpts); err != nil {
 		return 0, fmt.Errorf("failed to list Routes: %w", err)
 	}
+	r.recordAPICall(config, 1) // List operation
 
 	currentCount := len(routeList.Items)
 
@@ -396,6 +336,8 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 				if !errors.IsAlreadyExists(err) {
 					return int32(currentCount), fmt.Errorf("failed to create Service: %w", err)
 				}
+			} else {
+				r.recordAPICall(config, 1) // Service create operation
 			}
 
 			// Then create the Route
@@ -403,6 +345,7 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 			if err := r.Create(ctx, route); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to create Route: %w", err)
 			}
+			r.recordAPICall(config, 1) // Route create operation
 		}
 	}
 
@@ -413,6 +356,7 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 			if err := r.Delete(ctx, &routeList.Items[i]); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to delete Route: %w", err)
 			}
+			r.recordAPICall(config, 1) // Route delete operation
 
 			// Then delete the corresponding Service
 			serviceName := fmt.Sprintf("load-service-%d", i)
@@ -427,6 +371,8 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 				if !errors.IsNotFound(err) {
 					return int32(currentCount), fmt.Errorf("failed to delete Service: %w", err)
 				}
+			} else {
+				r.recordAPICall(config, 1) // Service delete operation
 			}
 		}
 	}
@@ -515,6 +461,7 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 	if err := r.List(ctx, imageStreamList, listOpts); err != nil {
 		return 0, fmt.Errorf("failed to list ImageStreams: %w", err)
 	}
+	r.recordAPICall(config, 1) // List operation
 
 	currentCount := len(imageStreamList.Items)
 
@@ -525,6 +472,7 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 			if err := r.Create(ctx, imageStream); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to create ImageStream: %w", err)
 			}
+			r.recordAPICall(config, 1) // Create operation
 		}
 	}
 
@@ -534,6 +482,7 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 			if err := r.Delete(ctx, &imageStreamList.Items[i]); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to delete ImageStream: %w", err)
 			}
+			r.recordAPICall(config, 1) // Delete operation
 		}
 	}
 
@@ -589,6 +538,7 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 	if err := r.List(ctx, buildConfigList, listOpts); err != nil {
 		return 0, fmt.Errorf("failed to list BuildConfigs: %w", err)
 	}
+	r.recordAPICall(config, 1) // List operation
 
 	currentCount := len(buildConfigList.Items)
 
@@ -599,6 +549,7 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 			if err := r.Create(ctx, buildConfig); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to create BuildConfig: %w", err)
 			}
+			r.recordAPICall(config, 1) // Create operation
 		}
 	}
 
@@ -608,6 +559,7 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 			if err := r.Delete(ctx, &buildConfigList.Items[i]); err != nil {
 				return int32(currentCount), fmt.Errorf("failed to delete BuildConfig: %w", err)
 			}
+			r.recordAPICall(config, 1) // Delete operation
 		}
 	}
 
@@ -693,11 +645,19 @@ func (r *ScaleLoadConfigReconciler) manageEvents(ctx context.Context,
 		apiCalls++
 	}
 
+	// Calculate success rate safely to avoid division by zero
+	var successRate string
+	if eventsToCreate > 0 {
+		successRate = fmt.Sprintf("%.1f%%", float64(createdCount)/float64(eventsToCreate)*100)
+	} else {
+		successRate = "N/A (no events to create)"
+	}
+
 	log.V(1).Info("Event generation completed",
 		"attempted", eventsToCreate,
 		"created", createdCount,
 		"failed", failedCount,
-		"successRate", fmt.Sprintf("%.1f%%", float64(createdCount)/float64(eventsToCreate)*100),
+		"successRate", successRate,
 		"apiCalls", apiCalls)
 
 	return createdCount, nil
@@ -901,8 +861,8 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 		return 0
 	}
 
-	// Randomly select resources to update based on configuration
-	updateChance := 0.1 // 10% chance per reconcile cycle
+	// More aggressive resource churn to meet API call targets
+	updateChance := 0.4 // 40% chance per reconcile cycle (increased from 10%)
 	var updatedCount int32
 
 	for _, resource := range resources {
@@ -922,6 +882,8 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 					"resource", resource.GetName(), "type", resourceType, "error", err)
 			} else {
 				updatedCount++
+				// Record the API call for metrics tracking
+				r.recordAPICall(config, 1)
 			}
 		}
 	}
@@ -938,57 +900,38 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 	return updatedCount
 }
 
-// checkAPIRateLimit checks if we can make the requested number of API calls
+// checkAPIRateLimit is simplified - now just checks if we're under target rate
+// The rate controller will ensure we meet the target regardless
 func (r *ScaleLoadConfigReconciler) checkAPIRateLimit(config *scalev1.ScaleLoadConfig, requestedCalls int32, nodeCount int) bool {
-	var totalAllowedRate int32
-
-	// Priority: APICallRateStatic > APICallRatePerNode > APICallRate (deprecated)
-	if config.Spec.LoadProfile.APICallRateStatic != nil {
-		// Static rate: fixed total regardless of node count
-		totalAllowedRate = *config.Spec.LoadProfile.APICallRateStatic
-	} else if config.Spec.LoadProfile.APICallRatePerNode != nil {
-		// Per-node rate: scales with node count
-		totalAllowedRate = *config.Spec.LoadProfile.APICallRatePerNode * int32(nodeCount)
-	} else if config.Spec.LoadProfile.APICallRate != nil {
-		// Deprecated field: treat as per-node for backward compatibility
-		totalAllowedRate = *config.Spec.LoadProfile.APICallRate * int32(nodeCount)
-	} else {
-		// Default: 20 calls/min/node
-		totalAllowedRate = 20 * int32(nodeCount)
-	}
-
-	now := time.Now()
-
-	// Reset counter every minute
-	if r.lastRateLimitReset.IsZero() || now.Sub(r.lastRateLimitReset) >= time.Minute {
-		r.apiCallCounter = 0
-		r.lastRateLimitReset = now
-	}
-
-	// Check if we would exceed the limit
-	if r.apiCallCounter+requestedCalls > totalAllowedRate {
-		return false
-	}
-
-	// Reserve the API calls by incrementing the counter
-	r.apiCallCounter += requestedCalls
-
+	// Always allow calls - the rate controller will ensure we hit targets
+	// This removes complexity and lets the ensureAPICallRate function handle rate management
 	return true
 }
 
-// recordAPICall records API calls for rate limiting
+// recordAPICall records API calls for simplified rate tracking and metrics
 func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfig, callCount int32) {
 	now := time.Now()
 
-	// Reset counter every minute
-	if r.lastRateLimitReset.IsZero() || now.Sub(r.lastRateLimitReset) >= time.Minute {
-		r.apiCallCounter = 0
-		r.lastRateLimitReset = now
+	// Simplified rate tracking (resets every minute)
+	if r.lastRateReset.IsZero() || now.Sub(r.lastRateReset) >= time.Minute {
+		r.apiCallsThisMinute = 0
+		r.lastRateReset = now
+	}
+	r.apiCallsThisMinute += callCount
+
+	// Cumulative metrics counter (for accurate reporting)
+	r.totalAPICallsMade += int64(callCount)
+
+	// Debug logging every 100 calls to avoid spam
+	if r.totalAPICallsMade%100 == 0 {
+		log := r.Log.WithName("api-call-tracker")
+		log.Info("API calls recorded",
+			"callCount", callCount,
+			"totalAPICallsMade", r.totalAPICallsMade,
+			"apiCallsThisMinute", r.apiCallsThisMinute)
 	}
 
-	r.apiCallCounter += callCount
-
-	// Record metrics
+	// Record prometheus metrics
 	r.APICallRate.Observe(float64(callCount))
 }
 
@@ -1012,4 +955,413 @@ func (r *ScaleLoadConfigReconciler) getEffectiveAPIRate(config *scalev1.ScaleLoa
 	}
 
 	return totalRate, rateType
+}
+
+// managePods creates and manages Pod resources to simulate realistic workloads on KWOK nodes
+func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
+	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
+
+	log := r.Log.WithName("pod-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// List existing Pods managed by this operator
+	podList := &corev1.PodList{}
+	listOpts := &client.ListOptions{
+		Namespace: namespace,
+	}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "pod",
+	}.ApplyToList(listOpts)
+
+	if err := r.List(ctx, podList, listOpts); err != nil {
+		return 0, fmt.Errorf("failed to list Pods: %w", err)
+	}
+	r.recordAPICall(config, 1) // List operation
+
+	currentCount := len(podList.Items)
+	log.V(1).Info("Pod management starting",
+		"current", currentCount,
+		"target", targetCount,
+		"targetCount", targetCount)
+
+	var totalApiCalls, created, deleted int32
+
+	// Scale up pods if needed
+	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
+		log.V(1).Info("Creating pods", "count", toCreate)
+
+		for i := int32(0); i < toCreate; i++ {
+			pod := r.generatePod(config, namespace, fmt.Sprintf("sim-pod-%s-%d", generateRandomString(6), i))
+			if err := r.Create(ctx, pod); err != nil {
+				log.Error(err, "Failed to create pod", "pod", pod.Name)
+				continue
+			}
+			created++
+			totalApiCalls++
+			r.recordAPICall(config, 1)
+		}
+	}
+
+	// Scale down pods if needed
+	if int32(currentCount) > targetCount {
+		toDelete := int32(currentCount) - targetCount
+		log.V(1).Info("Deleting pods", "count", toDelete)
+
+		for i := int32(0); i < toDelete && i < int32(len(podList.Items)); i++ {
+			pod := &podList.Items[i]
+			if err := r.Delete(ctx, pod); err != nil {
+				log.Error(err, "Failed to delete pod", "pod", pod.Name)
+				continue
+			}
+			deleted++
+			totalApiCalls++
+			r.recordAPICall(config, 1)
+		}
+	}
+
+	// Randomly update some Pods to simulate churn
+	objs := make([]client.Object, len(podList.Items))
+	for i, item := range podList.Items {
+		objs[i] = &item
+	}
+	updatedCount := r.performResourceChurn(ctx, config, objs, namespace, "pod")
+	totalApiCalls += updatedCount
+
+	log.V(1).Info("Pod management completed",
+		"targetCount", targetCount,
+		"final", targetCount,
+		"created", created,
+		"deleted", deleted,
+		"updated", updatedCount,
+		"totalApiCalls", totalApiCalls)
+
+	return targetCount, nil
+}
+
+// generatePod creates a Pod with realistic configuration for KWOK nodes
+func (r *ScaleLoadConfigReconciler) generatePod(config *scalev1.ScaleLoadConfig, namespace, name string) *corev1.Pod {
+	// Get workload type (or use default if none specified)
+	workloadType := r.selectPodWorkloadType(config)
+
+	// Generate basic labels
+	labels := map[string]string{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "pod",
+		"scale.openshift.io/created-by":    "sim-operator",
+		"scale.openshift.io/workload-type": workloadType.Name,
+		"scale.openshift.io/creation-time": fmt.Sprintf("%d", time.Now().Unix()),
+	}
+
+	// Add workload type specific labels
+	for k, v := range workloadType.Labels {
+		labels[k] = v
+	}
+
+	// Generate basic annotations
+	annotations := map[string]string{
+		"scale.openshift.io/description": "Simulated workload pod for load testing",
+	}
+
+	// Add workload type specific annotations
+	for k, v := range workloadType.Annotations {
+		annotations[k] = v
+	}
+
+	// Convert resource strings to resource.Quantity
+	resources := corev1.ResourceRequirements{
+		Requests: make(corev1.ResourceList),
+		Limits:   make(corev1.ResourceList),
+	}
+
+	if workloadType.Resources.CPURequest != "" {
+		if quantity, err := parseResourceQuantity(workloadType.Resources.CPURequest); err == nil {
+			resources.Requests[corev1.ResourceCPU] = quantity
+		}
+	}
+	if workloadType.Resources.MemoryRequest != "" {
+		if quantity, err := parseResourceQuantity(workloadType.Resources.MemoryRequest); err == nil {
+			resources.Requests[corev1.ResourceMemory] = quantity
+		}
+	}
+	if workloadType.Resources.CPULimit != "" {
+		if quantity, err := parseResourceQuantity(workloadType.Resources.CPULimit); err == nil {
+			resources.Limits[corev1.ResourceCPU] = quantity
+		}
+	}
+	if workloadType.Resources.MemoryLimit != "" {
+		if quantity, err := parseResourceQuantity(workloadType.Resources.MemoryLimit); err == nil {
+			resources.Limits[corev1.ResourceMemory] = quantity
+		}
+	}
+
+	// Determine restart policy
+	restartPolicy := corev1.RestartPolicyAlways
+	if workloadType.RestartPolicy != "" {
+		switch workloadType.RestartPolicy {
+		case "OnFailure":
+			restartPolicy = corev1.RestartPolicyOnFailure
+		case "Never":
+			restartPolicy = corev1.RestartPolicyNever
+		}
+	}
+
+	// Create the pod specification
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: restartPolicy,
+			Containers: []corev1.Container{
+				{
+					Name:            "app",
+					Image:           workloadType.Image,
+					Resources:       resources,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command:         []string{"sleep", "3600"}, // Simple long-running command
+				},
+			},
+		},
+	}
+
+	// Add tolerations for KWOK nodes if enabled
+	if config.Spec.ResourceChurn.Pods.TolerateKwokTaint {
+		pod.Spec.Tolerations = []corev1.Toleration{
+			{
+				Key:      "kwok.x-k8s.io/node",
+				Operator: corev1.TolerationOpEqual,
+				Value:    "fake",
+				Effect:   corev1.TaintEffectNoSchedule,
+			},
+		}
+	}
+
+	// Add node affinity to prefer KWOK nodes
+	if config.Spec.ResourceChurn.Pods.NodeAffinityStrategy != "" {
+		pod.Spec.Affinity = &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{
+					{
+						Weight: 100,
+						Preference: corev1.NodeSelectorTerm{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "type",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"kwok"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	return pod
+}
+
+// selectPodWorkloadType selects a workload type based on weights, or returns a default
+func (r *ScaleLoadConfigReconciler) selectPodWorkloadType(config *scalev1.ScaleLoadConfig) scalev1.PodWorkloadType {
+	workloadTypes := config.Spec.ResourceChurn.Pods.WorkloadTypes
+
+	// If no workload types defined, return default
+	if len(workloadTypes) == 0 {
+		return scalev1.PodWorkloadType{
+			Name:   "default-app",
+			Weight: 1,
+			Resources: scalev1.PodResourceRequirements{
+				CPURequest:    "100m",
+				CPULimit:      "500m",
+				MemoryRequest: "128Mi",
+				MemoryLimit:   "256Mi",
+			},
+			Image:         "registry.redhat.io/ubi8/ubi-minimal:latest",
+			RestartPolicy: "Always",
+			Labels: map[string]string{
+				"app": "simulated-workload",
+			},
+		}
+	}
+
+	// Calculate total weight
+	totalWeight := int32(0)
+	for _, wt := range workloadTypes {
+		totalWeight += wt.Weight
+	}
+
+	if totalWeight == 0 {
+		return workloadTypes[0] // Return first one if no weights
+	}
+
+	// Select based on weight
+	randomValue := mathrand.Int31n(totalWeight)
+	currentWeight := int32(0)
+
+	for _, wt := range workloadTypes {
+		currentWeight += wt.Weight
+		if randomValue < currentWeight {
+			return wt
+		}
+	}
+
+	return workloadTypes[0] // Fallback
+}
+
+// parseResourceQuantity parses a resource string into a resource.Quantity
+func parseResourceQuantity(s string) (resource.Quantity, error) {
+	return resource.ParseQuantity(s)
+}
+
+// manageResourceTypesParallel processes all resource types concurrently within a namespace
+func (r *ScaleLoadConfigReconciler) manageResourceTypesParallel(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace corev1.Namespace) map[string]int {
+	log := r.Log.WithName("resource-parallel").WithValues("namespace", namespace.Name)
+	startTime := time.Now()
+
+	// Result collection
+	type resourceResult struct {
+		resourceType string
+		count        int32
+		err          error
+	}
+
+	resultsChan := make(chan resourceResult, 10) // Buffer for all resource types
+	var wg sync.WaitGroup
+
+	// Track which resource types to process
+	resourceTypes := []string{}
+
+	log.V(2).Info("Starting parallel resource management",
+		"configmapsEnabled", config.Spec.ResourceChurn.ConfigMaps.Enabled,
+		"secretsEnabled", config.Spec.ResourceChurn.Secrets.Enabled,
+		"routesEnabled", config.Spec.ResourceChurn.Routes.Enabled,
+		"imagestreamsEnabled", config.Spec.ResourceChurn.ImageStreams.Enabled,
+		"buildconfigsEnabled", config.Spec.ResourceChurn.BuildConfigs.Enabled,
+		"eventsEnabled", config.Spec.ResourceChurn.Events.Enabled,
+		"podsEnabled", config.Spec.ResourceChurn.Pods.Enabled)
+
+	// ConfigMaps
+	if config.Spec.ResourceChurn.ConfigMaps.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ConfigMaps.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "configMaps")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.manageConfigMaps(ctx, config, namespace.Name, config.Spec.ResourceChurn.ConfigMaps.Count)
+				resultsChan <- resourceResult{"configMaps", count, err}
+			}()
+		}
+	}
+
+	// Secrets
+	if config.Spec.ResourceChurn.Secrets.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Secrets.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "secrets")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.manageSecrets(ctx, config, namespace.Name, config.Spec.ResourceChurn.Secrets.Count)
+				resultsChan <- resourceResult{"secrets", count, err}
+			}()
+		}
+	}
+
+	// Routes
+	if config.Spec.ResourceChurn.Routes.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Routes.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "routes")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.manageRoutes(ctx, config, namespace.Name, config.Spec.ResourceChurn.Routes.Count)
+				resultsChan <- resourceResult{"routes", count, err}
+			}()
+		}
+	}
+
+	// ImageStreams
+	if config.Spec.ResourceChurn.ImageStreams.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.ImageStreams.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "imageStreams")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.manageImageStreams(ctx, config, namespace.Name, config.Spec.ResourceChurn.ImageStreams.Count)
+				resultsChan <- resourceResult{"imageStreams", count, err}
+			}()
+		}
+	}
+
+	// BuildConfigs
+	if config.Spec.ResourceChurn.BuildConfigs.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.BuildConfigs.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "buildConfigs")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.manageBuildConfigs(ctx, config, namespace.Name, config.Spec.ResourceChurn.BuildConfigs.Count)
+				resultsChan <- resourceResult{"buildConfigs", count, err}
+			}()
+		}
+	}
+
+	// Events (no namespace interval check)
+	if config.Spec.ResourceChurn.Events.Enabled {
+		resourceTypes = append(resourceTypes, "events")
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			count, err := r.manageEvents(ctx, config, namespace.Name)
+			resultsChan <- resourceResult{"events", count, err}
+		}()
+	}
+
+	// Pods
+	if config.Spec.ResourceChurn.Pods.Enabled {
+		if r.shouldCreateResourceForNamespace(namespace, config.Spec.ResourceChurn.Pods.NamespaceInterval) {
+			resourceTypes = append(resourceTypes, "pods")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, err := r.managePods(ctx, config, namespace.Name, config.Spec.ResourceChurn.Pods.Count)
+				resultsChan <- resourceResult{"pods", count, err}
+			}()
+		}
+	}
+
+	// Wait for all resource types to complete
+	wg.Wait()
+	close(resultsChan)
+
+	// Collect results
+	resourceCounts := make(map[string]int)
+	var errors []error
+	successCount := 0
+
+	for result := range resultsChan {
+		if result.err != nil {
+			log.Error(result.err, "Failed to manage resource type", "resourceType", result.resourceType)
+			errors = append(errors, result.err)
+		} else {
+			resourceCounts[result.resourceType] = int(result.count)
+			successCount++
+		}
+	}
+
+	duration := time.Since(startTime)
+	resourceTypesPerSecond := float64(len(resourceTypes)) / duration.Seconds()
+
+	log.V(2).Info("Parallel resource management completed",
+		"duration", duration,
+		"resourceTypes", len(resourceTypes),
+		"successful", successCount,
+		"errors", len(errors),
+		"resourceTypesPerSecond", fmt.Sprintf("%.1f", resourceTypesPerSecond),
+		"finalCounts", resourceCounts)
+
+	return resourceCounts
 }

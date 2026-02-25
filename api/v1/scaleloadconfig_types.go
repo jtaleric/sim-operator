@@ -135,6 +135,12 @@ type ResourceChurnConfig struct {
 
 	// Events controls Event generation patterns
 	Events EventsConfig `json:"events,omitempty"`
+
+	// Pods controls Pod resource patterns
+	Pods PodConfig `json:"pods,omitempty"`
+
+	// Namespaces controls namespace churn patterns
+	Namespaces NamespaceChurnConfig `json:"namespaces,omitempty"`
 }
 
 // ResourceTypeConfig defines behavior for specific resource types
@@ -194,6 +200,116 @@ type EventTypeConfig struct {
 
 	// Weight for random selection (higher = more frequent)
 	Weight int32 `json:"weight"`
+}
+
+// PodConfig controls Pod resource patterns and workload simulation
+type PodConfig struct {
+	// Enabled controls whether pod simulation is active
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Count per namespace
+	// +kubebuilder:default=5
+	Count int32 `json:"count,omitempty"`
+
+	// NamespaceInterval controls how often pods are created relative to namespaces
+	// For example, interval=2 means create pods in every 2nd namespace
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	NamespaceInterval int32 `json:"namespaceInterval,omitempty"`
+
+	// UpdateFrequencyMin minimum time between pod updates (seconds)
+	// +kubebuilder:default=120
+	UpdateFrequencyMin int32 `json:"updateFrequencyMin,omitempty"`
+
+	// UpdateFrequencyMax maximum time between pod updates (seconds)
+	// +kubebuilder:default=600
+	UpdateFrequencyMax int32 `json:"updateFrequencyMax,omitempty"`
+
+	// DeleteRecreateChance probability of delete+recreate vs update (0.0-1.0)
+	// +kubebuilder:default="0.15"
+	// +kubebuilder:validation:Pattern=`^(0(\.[0-9]+)?|1(\.0+)?)$`
+	DeleteRecreateChance string `json:"deleteRecreateChance,omitempty"`
+
+	// WorkloadTypes defines types of workloads to simulate
+	WorkloadTypes []PodWorkloadType `json:"workloadTypes,omitempty"`
+
+	// NodeAffinityStrategy controls how pods are assigned to KWOK nodes
+	// +kubebuilder:default=round-robin
+	// +kubebuilder:validation:Enum=round-robin;random;sticky
+	NodeAffinityStrategy string `json:"nodeAffinityStrategy,omitempty"`
+
+	// TolerateKwokTaint allows pods to be scheduled on KWOK nodes
+	// +kubebuilder:default=true
+	TolerateKwokTaint bool `json:"tolerateKwokTaint,omitempty"`
+}
+
+// PodWorkloadType defines different types of simulated workloads
+type PodWorkloadType struct {
+	// Name of the workload type
+	Name string `json:"name"`
+
+	// Weight for random selection (higher = more frequent)
+	Weight int32 `json:"weight"`
+
+	// Resources defines resource requests and limits
+	Resources PodResourceRequirements `json:"resources"`
+
+	// Image to use for the pod
+	// +kubebuilder:default="registry.redhat.io/ubi8/ubi-minimal:latest"
+	Image string `json:"image,omitempty"`
+
+	// RestartPolicy for the pod
+	// +kubebuilder:default=Always
+	// +kubebuilder:validation:Enum=Always;OnFailure;Never
+	RestartPolicy string `json:"restartPolicy,omitempty"`
+
+	// Labels to apply to pods of this workload type
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to apply to pods of this workload type
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// PodResourceRequirements defines resource requests and limits for pods
+type PodResourceRequirements struct {
+	// CPU requests
+	// +kubebuilder:default="100m"
+	CPURequest string `json:"cpuRequest,omitempty"`
+
+	// CPU limits
+	// +kubebuilder:default="500m"
+	CPULimit string `json:"cpuLimit,omitempty"`
+
+	// Memory requests
+	// +kubebuilder:default="128Mi"
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+
+	// Memory limits
+	// +kubebuilder:default="256Mi"
+	MemoryLimit string `json:"memoryLimit,omitempty"`
+}
+
+// NamespaceChurnConfig controls namespace deletion and recreation patterns
+type NamespaceChurnConfig struct {
+	// Enabled controls whether namespace churn is active
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ChurnPercentage percentage of namespaces to churn each cycle (1-100)
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	ChurnPercentage int32 `json:"churnPercentage,omitempty"`
+
+	// ChurnIntervalSeconds minimum time between namespace churn cycles
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=60
+	ChurnIntervalSeconds int32 `json:"churnIntervalSeconds,omitempty"`
+
+	// PreserveOldestNamespaces prevents churning the oldest N namespaces for stability
+	// +kubebuilder:default=10
+	PreserveOldestNamespaces int32 `json:"preserveOldestNamespaces,omitempty"`
 }
 
 // CleanupConfig controls cleanup behavior
@@ -258,6 +374,9 @@ type ResourceCounts struct {
 
 	// Events count (approximate, events may be auto-cleaned by Kubernetes)
 	Events int32 `json:"events"`
+
+	// Pods count
+	Pods int32 `json:"pods"`
 }
 
 // LoadGenerationMetrics contains performance metrics
