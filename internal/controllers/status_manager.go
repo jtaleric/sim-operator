@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,14 +40,7 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	latestConfig.Status.LastReconcileTime = &metav1.Time{Time: time.Now()}
 	latestConfig.Status.Metrics = metrics
 
-	// Update resource counts with debugging
-	log.Info("Updating status with resource counts",
-		"inputResourceCounts", resourceCounts,
-		"configMaps", resourceCounts["configMaps"],
-		"secrets", resourceCounts["secrets"],
-		"pods", resourceCounts["pods"],
-		"events", resourceCounts["events"])
-
+	// Update resource counts (minimal logging)
 	latestConfig.Status.TotalResources = scalev1.ResourceCounts{
 		ConfigMaps:   int32(resourceCounts["configMaps"]),
 		Secrets:      int32(resourceCounts["secrets"]),
@@ -55,13 +49,18 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 		BuildConfigs: int32(resourceCounts["buildConfigs"]),
 		Events:       int32(resourceCounts["events"]),
 		Pods:         int32(resourceCounts["pods"]),
+		Namespaces:   int32(namespaceCount),
 	}
 
-	log.Info("Status resource counts set to",
-		"configMaps", latestConfig.Status.TotalResources.ConfigMaps,
-		"secrets", latestConfig.Status.TotalResources.Secrets,
-		"pods", latestConfig.Status.TotalResources.Pods,
-		"events", latestConfig.Status.TotalResources.Events)
+	// Only log status updates every 10 reconciles to reduce spam
+	static := struct{ counter int }{}
+	static.counter++
+	if static.counter%10 == 0 {
+		log.Info("Status updated",
+			"pods", latestConfig.Status.TotalResources.Pods,
+			"configMaps", latestConfig.Status.TotalResources.ConfigMaps,
+			"totalResources", getTotalResourceCount(resourceCounts))
+	}
 
 	// Update conditions
 	latestConfig.Status.Conditions = r.updateConditions(latestConfig, kwokNodeCount)
@@ -69,9 +68,57 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	// Update Prometheus metrics
 	r.updatePrometheusMetrics(latestConfig)
 
-	if err := r.Status().Update(ctx, latestConfig); err != nil {
-		log.Error(err, "Failed to update ScaleLoadConfig status")
-		return ctrl.Result{}, err
+	// Retry status update with exponential backoff for conflict resolution
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
+	
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if err := r.Status().Update(ctx, latestConfig); err != nil {
+			if attempt == maxRetries-1 {
+				log.Error(err, "Failed to update ScaleLoadConfig status after retries", "attempts", maxRetries)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+			
+			// Check if it's a conflict error
+			if strings.Contains(err.Error(), "the object has been modified") {
+				// Wait with exponential backoff
+				retryDelay := time.Duration(attempt+1) * baseDelay
+				log.V(1).Info("Status update conflict, retrying", "attempt", attempt+1, "delay", retryDelay)
+				time.Sleep(retryDelay)
+				
+				// Refetch the latest version before retry
+				if err := r.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, latestConfig); err != nil {
+					log.Error(err, "Failed to refetch ScaleLoadConfig for retry")
+					return ctrl.Result{}, err
+				}
+				
+				// Recalculate metrics and update status fields
+				metrics := r.calculateMetrics(latestConfig, kwokNodeCount, namespaceCount, resourceCounts)
+				latestConfig.Status.ObservedGeneration = latestConfig.Generation
+				latestConfig.Status.KwokNodeCount = int32(kwokNodeCount)
+				latestConfig.Status.GeneratedNamespaces = int32(namespaceCount)
+				latestConfig.Status.LastReconcileTime = &metav1.Time{Time: time.Now()}
+				latestConfig.Status.Metrics = metrics
+				latestConfig.Status.TotalResources = scalev1.ResourceCounts{
+					ConfigMaps:   int32(resourceCounts["configMaps"]),
+					Secrets:      int32(resourceCounts["secrets"]),
+					Routes:       int32(resourceCounts["routes"]),
+					ImageStreams: int32(resourceCounts["imageStreams"]),
+					BuildConfigs: int32(resourceCounts["buildConfigs"]),
+					Events:       int32(resourceCounts["events"]),
+					Pods:         int32(resourceCounts["pods"]),
+					Namespaces:   int32(namespaceCount),
+				}
+				latestConfig.Status.Conditions = r.updateConditions(latestConfig, kwokNodeCount)
+				continue
+			} else {
+				// Non-conflict error, fail immediately
+				log.Error(err, "Failed to update ScaleLoadConfig status (non-conflict)")
+				return ctrl.Result{}, err
+			}
+		}
+		// Success - break out of retry loop
+		break
 	}
 
 	log.V(1).Info("Updated ScaleLoadConfig status",
@@ -96,6 +143,18 @@ func (r *ScaleLoadConfigReconciler) calculateMetrics(config *scalev1.ScaleLoadCo
 	var actualAPICallsPerMinute float64
 
 	totalResources := getTotalResourceCount(resourceCounts)
+	
+	// If no KWOK nodes, there should be no load generation API calls
+	if kwokNodeCount == 0 {
+		return scalev1.LoadGenerationMetrics{
+			APICallsPerMinute:    "0",
+			AverageReconcileTime: strconv.FormatInt(timeSinceLastReconcile.Milliseconds(), 10),
+			ErrorRate:            "0.00",
+			ResourceCreationRate: "0.00",
+			ResourceUpdateRate:   "0.00",
+			ResourceDeletionRate: "0.00",
+		}
+	}
 
 	// With parallel processing, each resource involves multiple API calls:
 	// - List operations: 1 call per resource type per namespace
@@ -132,7 +191,7 @@ func (r *ScaleLoadConfigReconciler) calculateMetrics(config *scalev1.ScaleLoadCo
 	}
 
 	log := r.Log.WithName("metrics-calculator")
-	log.Info("API call rate calculated",
+	log.V(2).Info("API call rate calculated",
 		"totalResources", totalResources,
 		"estimatedCallsPerReconcile", estimatedAPICallsPerReconcile,
 		"reconcileIntervalMinutes", reconcileIntervalMinutes,
@@ -155,7 +214,7 @@ func (r *ScaleLoadConfigReconciler) calculateMetrics(config *scalev1.ScaleLoadCo
 		actualAPICallsPerMinute = float64(totalResources) * 1.8 // Direct calculation for high scale
 	}
 
-	log.Info("Final metrics being set",
+	log.V(2).Info("Final metrics being set",
 		"apiCallsPerMinute", actualAPICallsPerMinute,
 		"totalResources", totalResources,
 		"resourceCreationRate", resourceCreationRate)

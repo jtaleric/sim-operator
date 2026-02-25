@@ -377,6 +377,9 @@ type ResourceCounts struct {
 
 	// Pods count
 	Pods int32 `json:"pods"`
+
+	// Namespaces count (generated namespaces being managed)
+	Namespaces int32 `json:"namespaces"`
 }
 
 // LoadGenerationMetrics contains performance metrics
