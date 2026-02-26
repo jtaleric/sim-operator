@@ -900,13 +900,6 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 	return updatedCount
 }
 
-// checkAPIRateLimit is simplified - now just checks if we're under target rate
-// The rate controller will ensure we meet the target regardless
-func (r *ScaleLoadConfigReconciler) checkAPIRateLimit(config *scalev1.ScaleLoadConfig, requestedCalls int32, nodeCount int) bool {
-	// Always allow calls - the rate controller will ensure we hit targets
-	// This removes complexity and lets the ensureAPICallRate function handle rate management
-	return true
-}
 
 // recordAPICall records API calls for simplified rate tracking and metrics
 func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfig, callCount int32) {
@@ -922,11 +915,10 @@ func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfi
 	// Cumulative metrics counter (for accurate reporting)
 	r.totalAPICallsMade += int64(callCount)
 
-	// Debug logging every 100 calls to avoid spam
-	if r.totalAPICallsMade%100 == 0 {
+	// Debug logging every 5000 calls to reduce spam at scale
+	if r.totalAPICallsMade%5000 == 0 {
 		log := r.Log.WithName("api-call-tracker")
-		log.Info("API calls recorded",
-			"callCount", callCount,
+		log.Info("API calls milestone",
 			"totalAPICallsMade", r.totalAPICallsMade,
 			"apiCallsThisMinute", r.apiCallsThisMinute)
 	}

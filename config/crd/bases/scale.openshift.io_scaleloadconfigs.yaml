@@ -753,6 +753,10 @@ spec:
                     description: ImageStreams count
                     format: int32
                     type: integer
+                  namespaces:
+                    description: Namespaces count (generated namespaces being managed)
+                    format: int32
+                    type: integer
                   pods:
                     description: Pods count
                     format: int32
@@ -770,6 +774,7 @@ spec:
                 - configMaps
                 - events
                 - imageStreams
+                - namespaces
                 - pods
                 - routes
                 - secrets

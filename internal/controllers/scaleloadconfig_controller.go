@@ -48,7 +48,9 @@ type ScaleLoadConfigReconciler struct {
 
 	// Cumulative API call tracking for metrics
 	totalAPICallsMade int64
-	lastMetricsReset  time.Time
+
+	// Logging optimization
+	reconcileCounter int
 }
 
 // ResourceManager handles lifecycle of resources for a specific namespace
@@ -173,10 +175,15 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		totalResources += count
 	}
 
-	log.Info("Load resource management completed",
-		"namespaceCount", namespaceCount,
-		"totalResources", totalResources,
-		"reconcileDuration", time.Since(startTime).String())
+	// Periodic summary logging (every 6 reconciles = ~1 minute)
+	r.reconcileCounter++
+	if r.reconcileCounter%6 == 0 {
+		log.Info("Load generation summary",
+			"namespaces", namespaceCount,
+			"totalResources", totalResources,
+			"reconcileDuration", time.Since(startTime).String(),
+			"effectiveAPIRate", fmt.Sprintf("%.0f calls/min", float64(effectiveRate)))
+	}
 
 	// Update node annotations for networking churn
 	if config.Spec.AnnotationChurn.Enabled {
