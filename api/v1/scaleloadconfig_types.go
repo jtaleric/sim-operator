@@ -153,6 +153,12 @@ type ResourceTypeConfig struct {
 	// +kubebuilder:default=1
 	Count int32 `json:"count,omitempty"`
 
+	// Maximum total resources of this type across all namespaces
+	// 0 means no limit, >0 means stop creating when this count is reached
+	// Resources will still be churned/modified, just not created beyond this limit
+	// +kubebuilder:default=0
+	Maximum int32 `json:"maximum,omitempty"`
+
 	// NamespaceInterval controls how often this resource is created relative to namespaces
 	// For example, interval=10 means create this resource in every 10th namespace
 	// +kubebuilder:default=1
@@ -211,6 +217,12 @@ type PodConfig struct {
 	// Count per namespace
 	// +kubebuilder:default=5
 	Count int32 `json:"count,omitempty"`
+
+	// Maximum total pods of this type across all namespaces
+	// 0 means no limit, >0 means stop creating when this count is reached
+	// Pods will still be churned/modified, just not created beyond this limit
+	// +kubebuilder:default=0
+	Maximum int32 `json:"maximum,omitempty"`
 
 	// NamespaceInterval controls how often pods are created relative to namespaces
 	// For example, interval=2 means create pods in every 2nd namespace
@@ -310,6 +322,12 @@ type NamespaceChurnConfig struct {
 	// PreserveOldestNamespaces prevents churning the oldest N namespaces for stability
 	// +kubebuilder:default=10
 	PreserveOldestNamespaces int32 `json:"preserveOldestNamespaces,omitempty"`
+
+	// Maximum total namespaces to create across the cluster
+	// 0 means no limit, >0 means stop creating when this count is reached
+	// Namespace churn will still occur within the existing namespaces
+	// +kubebuilder:default=0
+	Maximum int32 `json:"maximum,omitempty"`
 }
 
 // CleanupConfig controls cleanup behavior
