@@ -226,6 +226,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total resources of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Resources will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-
@@ -266,6 +274,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total resources of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Resources will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-
@@ -347,6 +363,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total resources of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Resources will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-
@@ -390,6 +414,14 @@ spec:
                         default: false
                         description: Enabled controls whether namespace churn is active
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total namespaces to create across the cluster
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Namespace churn will still occur within the existing namespaces
+                        format: int32
+                        type: integer
                       preserveOldestNamespaces:
                         default: 10
                         description: PreserveOldestNamespaces prevents churning the
@@ -415,6 +447,14 @@ spec:
                         default: true
                         description: Enabled controls whether pod simulation is active
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total pods of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Pods will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-
@@ -534,6 +574,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total resources of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Resources will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-
@@ -574,6 +622,14 @@ spec:
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
+                      maximum:
+                        default: 0
+                        description: |-
+                          Maximum total resources of this type across all namespaces
+                          0 means no limit, >0 means stop creating when this count is reached
+                          Resources will still be churned/modified, just not created beyond this limit
+                        format: int32
+                        type: integer
                       namespaceInterval:
                         default: 1
                         description: |-

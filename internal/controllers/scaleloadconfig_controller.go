@@ -274,15 +274,36 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	r.recordAPICall(config, 1) // List namespaces operation
 
 	currentNamespaceCount := len(existingNamespaces)
+
+	// Check maximum limit for namespaces if namespace churn is enabled
+	effectiveTarget := targetNamespaces
+	if config.Spec.ResourceChurn.Namespaces.Enabled && config.Spec.ResourceChurn.Namespaces.Maximum > 0 {
+		if currentNamespaceCount >= int(config.Spec.ResourceChurn.Namespaces.Maximum) {
+			effectiveTarget = currentNamespaceCount // Don't create more, maintain current count
+			log.Info("Namespace creation limited by maximum",
+				"requestedTarget", targetNamespaces,
+				"effectiveTarget", effectiveTarget,
+				"current", currentNamespaceCount,
+				"maximum", config.Spec.ResourceChurn.Namespaces.Maximum)
+		} else if targetNamespaces > int(config.Spec.ResourceChurn.Namespaces.Maximum) {
+			effectiveTarget = int(config.Spec.ResourceChurn.Namespaces.Maximum)
+			log.Info("Namespace target reduced by maximum limit",
+				"requestedTarget", targetNamespaces,
+				"effectiveTarget", effectiveTarget,
+				"maximum", config.Spec.ResourceChurn.Namespaces.Maximum)
+		}
+	}
+
 	log.V(1).Info("Namespace management starting",
 		"current", currentNamespaceCount,
-		"target", targetNamespaces,
+		"requestedTarget", targetNamespaces,
+		"effectiveTarget", effectiveTarget,
 		"kwokNodes", len(kwokNodes))
 
 	// Scale up namespaces if needed
-	if currentNamespaceCount < targetNamespaces {
-		namespacesToCreate := targetNamespaces - currentNamespaceCount
-		log.V(1).Info("Scaling up namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toCreate", namespacesToCreate)
+	if currentNamespaceCount < effectiveTarget {
+		namespacesToCreate := effectiveTarget - currentNamespaceCount
+		log.V(1).Info("Scaling up namespaces", "current", currentNamespaceCount, "target", effectiveTarget, "toCreate", namespacesToCreate)
 
 		if err := r.createNamespaces(ctx, config, kwokNodes, namespacesToCreate); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to create namespaces: %w", err)
@@ -299,15 +320,15 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	}
 
 	// Scale down namespaces if needed
-	if currentNamespaceCount > targetNamespaces {
-		namespacesToDelete := currentNamespaceCount - targetNamespaces
-		log.V(1).Info("Scaling down namespaces", "current", currentNamespaceCount, "target", targetNamespaces, "toDelete", namespacesToDelete)
+	if currentNamespaceCount > effectiveTarget {
+		namespacesToDelete := currentNamespaceCount - effectiveTarget
+		log.V(1).Info("Scaling down namespaces", "current", currentNamespaceCount, "target", effectiveTarget, "toDelete", namespacesToDelete)
 
 		if err := r.deleteNamespaces(ctx, config, existingNamespaces, namespacesToDelete); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to delete namespaces: %w", err)
 		}
 		namespacesDeleted = namespacesToDelete
-		currentNamespaceCount = targetNamespaces
+		currentNamespaceCount = effectiveTarget
 		log.V(1).Info("Namespaces deleted successfully", "deleted", namespacesDeleted, "newTotal", currentNamespaceCount)
 	}
 

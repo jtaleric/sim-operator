@@ -71,27 +71,27 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	// Retry status update with exponential backoff for conflict resolution
 	maxRetries := 3
 	baseDelay := 100 * time.Millisecond
-	
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if err := r.Status().Update(ctx, latestConfig); err != nil {
 			if attempt == maxRetries-1 {
 				log.Error(err, "Failed to update ScaleLoadConfig status after retries", "attempts", maxRetries)
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 			}
-			
+
 			// Check if it's a conflict error
 			if strings.Contains(err.Error(), "the object has been modified") {
 				// Wait with exponential backoff
 				retryDelay := time.Duration(attempt+1) * baseDelay
 				log.V(1).Info("Status update conflict, retrying", "attempt", attempt+1, "delay", retryDelay)
 				time.Sleep(retryDelay)
-				
+
 				// Refetch the latest version before retry
 				if err := r.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, latestConfig); err != nil {
 					log.Error(err, "Failed to refetch ScaleLoadConfig for retry")
 					return ctrl.Result{}, err
 				}
-				
+
 				// Recalculate metrics and update status fields
 				metrics := r.calculateMetrics(latestConfig, kwokNodeCount, namespaceCount, resourceCounts)
 				latestConfig.Status.ObservedGeneration = latestConfig.Generation
@@ -143,7 +143,7 @@ func (r *ScaleLoadConfigReconciler) calculateMetrics(config *scalev1.ScaleLoadCo
 	var actualAPICallsPerMinute float64
 
 	totalResources := getTotalResourceCount(resourceCounts)
-	
+
 	// If no KWOK nodes, there should be no load generation API calls
 	if kwokNodeCount == 0 {
 		return scalev1.LoadGenerationMetrics{

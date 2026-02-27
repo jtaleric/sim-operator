@@ -106,6 +106,20 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 
 	log := r.Log.WithName("configmap-manager").WithValues("namespace", namespace, "targetCount", targetCount)
 
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "configMaps", targetCount, config.Spec.ResourceChurn.ConfigMaps.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for configMaps: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log.Info("ConfigMap creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.ConfigMaps.Maximum)
+		targetCount = effectiveTargetCount
+	}
+
 	// List existing ConfigMaps managed by this operator
 	configMapList := &corev1.ConfigMapList{}
 	listOpts := &client.ListOptions{
@@ -209,6 +223,20 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 
 	log := r.Log.WithName("secret-manager").WithValues("namespace", namespace, "targetCount", targetCount)
 
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "secrets", targetCount, config.Spec.ResourceChurn.Secrets.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for secrets: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log.Info("Secret creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.Secrets.Maximum)
+		targetCount = effectiveTargetCount
+	}
+
 	secretList := &corev1.SecretList{}
 	listOpts := &client.ListOptions{
 		Namespace: namespace,
@@ -309,6 +337,21 @@ func (r *ScaleLoadConfigReconciler) generateSecret(config *scalev1.ScaleLoadConf
 // manageRoutes creates and manages Route resources (OpenShift specific)
 func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
+
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "routes", targetCount, config.Spec.ResourceChurn.Routes.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for routes: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log := r.Log.WithName("route-manager").WithValues("namespace", namespace)
+		log.Info("Route creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.Routes.Maximum)
+		targetCount = effectiveTargetCount
+	}
 
 	routeList := &routev1.RouteList{}
 	listOpts := &client.ListOptions{
@@ -449,6 +492,21 @@ func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadCon
 func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "imageStreams", targetCount, config.Spec.ResourceChurn.ImageStreams.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for imageStreams: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log := r.Log.WithName("imagestream-manager").WithValues("namespace", namespace)
+		log.Info("ImageStream creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.ImageStreams.Maximum)
+		targetCount = effectiveTargetCount
+	}
+
 	imageStreamList := &imagev1.ImageStreamList{}
 	listOpts := &client.ListOptions{
 		Namespace: namespace,
@@ -525,6 +583,21 @@ func (r *ScaleLoadConfigReconciler) generateImageStream(config *scalev1.ScaleLoa
 // manageBuildConfigs creates and manages BuildConfig resources
 func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
+
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "buildConfigs", targetCount, config.Spec.ResourceChurn.BuildConfigs.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for buildConfigs: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log := r.Log.WithName("buildconfig-manager").WithValues("namespace", namespace)
+		log.Info("BuildConfig creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.BuildConfigs.Maximum)
+		targetCount = effectiveTargetCount
+	}
 
 	buildConfigList := &buildv1.BuildConfigList{}
 	listOpts := &client.ListOptions{
@@ -900,6 +973,138 @@ func (r *ScaleLoadConfigReconciler) performResourceChurn(ctx context.Context,
 	return updatedCount
 }
 
+// checkMaximumLimit checks if we've reached the maximum limit for a resource type
+// Returns the effective target count (may be less than requested if at limit)
+func (r *ScaleLoadConfigReconciler) checkMaximumLimit(ctx context.Context,
+	config *scalev1.ScaleLoadConfig, resourceType string, requestedCount int32,
+	maximumLimit int32) (int32, error) {
+
+	// If maximum is 0, no limit
+	if maximumLimit == 0 {
+		return requestedCount, nil
+	}
+
+	// Count existing resources of this type across all managed namespaces
+	var totalExisting int32
+
+	// Get all managed namespaces
+	namespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return requestedCount, err
+	}
+
+	// Count resources across all namespaces
+	for _, ns := range namespaces {
+		var count int32
+		switch resourceType {
+		case "pods":
+			count, _ = r.countExistingPods(ctx, config, ns.Name)
+		case "configMaps":
+			count, _ = r.countExistingConfigMaps(ctx, config, ns.Name)
+		case "secrets":
+			count, _ = r.countExistingSecrets(ctx, config, ns.Name)
+		case "routes":
+			count, _ = r.countExistingRoutes(ctx, config, ns.Name)
+		case "imageStreams":
+			count, _ = r.countExistingImageStreams(ctx, config, ns.Name)
+		case "buildConfigs":
+			count, _ = r.countExistingBuildConfigs(ctx, config, ns.Name)
+		}
+		totalExisting += count
+	}
+
+	// If we're already at or above the limit, don't create any new resources
+	if totalExisting >= maximumLimit {
+		return 0, nil
+	}
+
+	// If creating the requested count would exceed the limit, reduce it
+	if totalExisting+requestedCount > maximumLimit {
+		return maximumLimit - totalExisting, nil
+	}
+
+	// We're under the limit, create the requested count
+	return requestedCount, nil
+}
+
+// Helper functions to count existing resources
+func (r *ScaleLoadConfigReconciler) countExistingPods(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	podList := &corev1.PodList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "pod",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, podList, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(podList.Items)), nil
+}
+
+func (r *ScaleLoadConfigReconciler) countExistingConfigMaps(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	list := &corev1.ConfigMapList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "configmap",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, list, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(list.Items)), nil
+}
+
+func (r *ScaleLoadConfigReconciler) countExistingSecrets(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	list := &corev1.SecretList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "secret",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, list, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(list.Items)), nil
+}
+
+func (r *ScaleLoadConfigReconciler) countExistingRoutes(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	list := &routev1.RouteList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "route",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, list, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(list.Items)), nil
+}
+
+func (r *ScaleLoadConfigReconciler) countExistingImageStreams(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	list := &imagev1.ImageStreamList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "imagestream",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, list, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(list.Items)), nil
+}
+
+func (r *ScaleLoadConfigReconciler) countExistingBuildConfigs(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace string) (int32, error) {
+	list := &buildv1.BuildConfigList{}
+	listOpts := &client.ListOptions{Namespace: namespace}
+	client.MatchingLabels{
+		"scale.openshift.io/managed-by":    config.Name,
+		"scale.openshift.io/resource-type": "buildconfig",
+	}.ApplyToList(listOpts)
+	if err := r.List(ctx, list, listOpts); err != nil {
+		return 0, err
+	}
+	return int32(len(list.Items)), nil
+}
 
 // recordAPICall records API calls for simplified rate tracking and metrics
 func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfig, callCount int32) {
@@ -954,6 +1159,20 @@ func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
 	log := r.Log.WithName("pod-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// Check maximum limit and adjust target count if needed
+	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "pods", targetCount, config.Spec.ResourceChurn.Pods.Maximum)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check maximum limit for pods: %w", err)
+	}
+
+	if effectiveTargetCount != targetCount {
+		log.Info("Pod creation limited by maximum",
+			"requestedCount", targetCount,
+			"effectiveCount", effectiveTargetCount,
+			"maximum", config.Spec.ResourceChurn.Pods.Maximum)
+		targetCount = effectiveTargetCount
+	}
 
 	// List existing Pods managed by this operator
 	podList := &corev1.PodList{}
