@@ -401,21 +401,27 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 			}
 			r.recordAPICall(config, 1) // Route delete operation
 
-			// Then delete the corresponding Service
-			serviceName := fmt.Sprintf("load-service-%d", i)
-			service := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      serviceName,
-					Namespace: namespace,
-				},
+			// Delete corresponding Services by label selector (services are created with matching labels)
+			serviceList := &corev1.ServiceList{}
+			serviceListOpts := &client.ListOptions{
+				Namespace: namespace,
 			}
-			if err := r.Delete(ctx, service); err != nil {
-				// Log the error but don't fail the operation if the service doesn't exist
-				if !errors.IsNotFound(err) {
-					return int32(currentCount), fmt.Errorf("failed to delete Service: %w", err)
+			client.MatchingLabels{
+				"scale.openshift.io/managed-by":    config.Name,
+				"scale.openshift.io/resource-type": "service",
+			}.ApplyToList(serviceListOpts)
+
+			if err := r.List(ctx, serviceList, serviceListOpts); err == nil {
+				// Delete services created for routes (with index matching the route)
+				for _, svc := range serviceList.Items {
+					if err := r.Delete(ctx, &svc); err != nil {
+						if !errors.IsNotFound(err) {
+							return int32(currentCount), fmt.Errorf("failed to delete Service %s: %w", svc.Name, err)
+						}
+					} else {
+						r.recordAPICall(config, 1) // Service delete operation
+					}
 				}
-			} else {
-				r.recordAPICall(config, 1) // Service delete operation
 			}
 		}
 	}
@@ -425,8 +431,8 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 
 // generateRoute creates a realistic Route resource
 func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfig, namespace string, index int32) *routev1.Route {
-	name := fmt.Sprintf("load-route-%d", index)
-	serviceName := fmt.Sprintf("load-service-%d", index)
+	name := fmt.Sprintf("load-route-%s-%d", generateRandomString(6), index)
+	serviceName := fmt.Sprintf("load-service-%s-%d", generateRandomString(6), index)
 
 	return &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
@@ -457,7 +463,7 @@ func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfi
 
 // generateService creates a Service resource for the Route to reference
 func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadConfig, namespace string, index int32) *corev1.Service {
-	name := fmt.Sprintf("load-service-%d", index)
+	name := fmt.Sprintf("load-service-%s-%d", generateRandomString(6), index)
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
