@@ -146,11 +146,9 @@ type ResourceChurnConfig struct {
 // ResourceTypeConfig defines behavior for specific resource types
 type ResourceTypeConfig struct {
 	// Enabled controls whether this resource type is generated
-	// +kubebuilder:default=true
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Count per namespace
-	// +kubebuilder:default=1
 	Count int32 `json:"count,omitempty"`
 
 	// Maximum total resources of this type across all namespaces

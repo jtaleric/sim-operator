@@ -211,7 +211,6 @@ spec:
                     description: BuildConfigs controls BuildConfig resource patterns
                     properties:
                       count:
-                        default: 1
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -222,7 +221,6 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
-                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -259,7 +257,6 @@ spec:
                     description: ConfigMaps controls ConfigMap resource patterns
                     properties:
                       count:
-                        default: 1
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -270,7 +267,6 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
-                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -348,7 +344,6 @@ spec:
                     description: ImageStreams controls ImageStream resource patterns
                     properties:
                       count:
-                        default: 1
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -359,7 +354,6 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
-                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -559,7 +553,6 @@ spec:
                     description: Routes controls Route resource patterns
                     properties:
                       count:
-                        default: 1
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -570,7 +563,6 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
-                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -607,7 +599,6 @@ spec:
                     description: Secrets controls Secret resource patterns
                     properties:
                       count:
-                        default: 1
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -618,7 +609,6 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
-                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
