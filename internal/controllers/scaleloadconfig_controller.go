@@ -266,14 +266,23 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	resourceCounts := make(map[string]int)
 	var namespacesCreated, namespacesDeleted int
 
-	// Get existing managed namespaces
-	existingNamespaces, err := r.getManagedNamespaces(ctx, config)
+	// Get existing managed namespaces, separated by status
+	activeNamespaces, terminatingNamespaces, err := r.getManagedNamespacesWithStatus(ctx, config)
 	if err != nil {
 		return 0, resourceCounts, fmt.Errorf("failed to get managed namespaces: %w", err)
 	}
 	r.recordAPICall(config, 1) // List namespaces operation
 
-	currentNamespaceCount := len(existingNamespaces)
+	currentActiveCount := len(activeNamespaces)
+	terminatingCount := len(terminatingNamespaces)
+	// Count terminating namespaces toward total to avoid creating replacements too early
+	currentNamespaceCount := currentActiveCount + terminatingCount
+
+	log.V(1).Info("Namespace status", 
+		"active", currentActiveCount, 
+		"terminating", terminatingCount, 
+		"total", currentNamespaceCount,
+		"target", targetNamespaces)
 
 	// Check maximum limit for namespaces if namespace churn is enabled
 	effectiveTarget := targetNamespaces
@@ -310,33 +319,45 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		}
 		namespacesCreated = namespacesToCreate
 
-		// Re-fetch to get updated count
-		existingNamespaces, err = r.getManagedNamespaces(ctx, config)
+		// Re-fetch to get updated count (including new namespaces)
+		activeNamespaces, terminatingNamespaces, err = r.getManagedNamespacesWithStatus(ctx, config)
 		if err != nil {
 			return currentNamespaceCount, resourceCounts, err
 		}
-		currentNamespaceCount = len(existingNamespaces)
-		log.V(1).Info("Namespaces created successfully", "created", namespacesCreated, "newTotal", currentNamespaceCount)
+		currentActiveCount = len(activeNamespaces)
+		terminatingCount = len(terminatingNamespaces)
+		currentNamespaceCount = currentActiveCount + terminatingCount
+		log.V(1).Info("Namespaces created successfully", "created", namespacesCreated, "newActive", currentActiveCount, "stillTerminating", terminatingCount, "newTotal", currentNamespaceCount)
 	}
 
 	// Scale down namespaces if needed
-	if currentNamespaceCount > effectiveTarget {
-		namespacesToDelete := currentNamespaceCount - effectiveTarget
-		log.V(1).Info("Scaling down namespaces", "current", currentNamespaceCount, "target", effectiveTarget, "toDelete", namespacesToDelete)
+	// Only consider excess ACTIVE namespaces for deletion (don't retry terminating ones)
+	if currentActiveCount > effectiveTarget {
+		namespacesToDelete := currentActiveCount - effectiveTarget
+		log.V(1).Info("Scaling down namespaces", 
+			"currentActive", currentActiveCount, 
+			"terminating", terminatingCount,
+			"total", currentNamespaceCount,
+			"target", effectiveTarget, 
+			"toDelete", namespacesToDelete)
 
-		if err := r.deleteNamespaces(ctx, config, existingNamespaces, namespacesToDelete); err != nil {
+		if err := r.deleteNamespaces(ctx, config, activeNamespaces, namespacesToDelete); err != nil {
 			return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to delete namespaces: %w", err)
 		}
 		namespacesDeleted = namespacesToDelete
-		currentNamespaceCount = effectiveTarget
-		log.V(1).Info("Namespaces deleted successfully", "deleted", namespacesDeleted, "newTotal", currentNamespaceCount)
+		// Update counts: some active namespaces are now terminating
+		currentActiveCount -= namespacesToDelete
+		terminatingCount += namespacesToDelete
+		currentNamespaceCount = currentActiveCount + terminatingCount
+		log.V(1).Info("Namespaces deletion initiated", 
+			"deleted", namespacesDeleted, 
+			"newActive", currentActiveCount,
+			"nowTerminating", terminatingCount,
+			"newTotal", currentNamespaceCount)
 	}
 
-	// Get the current list of managed namespaces (including newly created ones)
-	currentNamespaces, err := r.getManagedNamespaces(ctx, config)
-	if err != nil {
-		return currentNamespaceCount, resourceCounts, fmt.Errorf("failed to get current namespaces: %w", err)
-	}
+	// Get the current list of active namespaces for resource processing (skip terminating ones)
+	currentNamespaces := activeNamespaces
 
 	// Manage resources within namespaces - PARALLEL PROCESSING
 	resourceCounts = r.manageNamespacesParallel(ctx, config, currentNamespaces)
@@ -375,6 +396,24 @@ func (r *ScaleLoadConfigReconciler) getManagedNamespaces(ctx context.Context, co
 	}
 
 	return namespaceList.Items, nil
+}
+
+// getManagedNamespacesWithStatus gets namespaces managed by this operator and separates by status
+func (r *ScaleLoadConfigReconciler) getManagedNamespacesWithStatus(ctx context.Context, config *scalev1.ScaleLoadConfig) (active, terminating []corev1.Namespace, err error) {
+	allNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, ns := range allNamespaces {
+		if ns.Status.Phase == corev1.NamespaceTerminating {
+			terminating = append(terminating, ns)
+		} else {
+			active = append(active, ns)
+		}
+	}
+
+	return active, terminating, nil
 }
 
 // createNamespaces creates new namespaces with proper labeling

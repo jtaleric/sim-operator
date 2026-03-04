@@ -40,37 +40,37 @@ spec:
   resourceChurn:
     configMaps:
       enabled: true
-      count: 1
-      updateFrequencyMin: 300   # 5 minutes
-      updateFrequencyMax: 1800  # 30 minutes
+      count: 3                  # Updated to match new default
+      updateFrequencyMin: 120   # 2 minutes (updated to match new defaults)
+      updateFrequencyMax: 600   # 10 minutes (updated to match new defaults)
       deleteRecreateChance: "0.1"
     
     secrets:
       enabled: true
-      count: 1
-      updateFrequencyMin: 600   # 10 minutes (secrets updated less frequently)
-      updateFrequencyMax: 3600  # 1 hour
+      count: 3                  # Updated to match new default
+      updateFrequencyMin: 120   # 2 minutes (updated to match new defaults)
+      updateFrequencyMax: 600   # 10 minutes (updated to match new defaults)
       deleteRecreateChance: "0.05"
     
     routes:
       enabled: true
-      count: 1
-      updateFrequencyMin: 900   # 15 minutes
-      updateFrequencyMax: 1800  # 30 minutes
+      count: 3                  # Updated to match new default
+      updateFrequencyMin: 120   # 2 minutes (updated to match new defaults)
+      updateFrequencyMax: 600   # 10 minutes (updated to match new defaults)
       deleteRecreateChance: "0.05"
     
     imageStreams:
       enabled: true
-      count: 1
-      updateFrequencyMin: 1800  # 30 minutes
-      updateFrequencyMax: 7200  # 2 hours
+      count: 3                  # Updated to match new default
+      updateFrequencyMin: 120   # 2 minutes (updated to match new defaults)
+      updateFrequencyMax: 600   # 10 minutes (updated to match new defaults)
       deleteRecreateChance: "0.02"
     
     buildConfigs:
       enabled: true
-      count: 1
-      updateFrequencyMin: 3600  # 1 hour
-      updateFrequencyMax: 14400 # 4 hours
+      count: 3                  # Updated to match new default
+      updateFrequencyMin: 120   # 2 minutes (updated to match new defaults)
+      updateFrequencyMax: 600   # 10 minutes (updated to match new defaults)
       deleteRecreateChance: "0.02"
     
     events:

@@ -124,13 +124,6 @@ spec:
                 description: LoadProfile defines the intensity and pattern of load
                   generation
                 properties:
-                  apiCallRate:
-                    default: 20
-                    description: |-
-                      APICallRate controls the frequency of API operations (calls per minute per node)
-                      DEPRECATED: Use APICallRatePerNode for clarity. Will be removed in future versions.
-                    format: int32
-                    type: integer
                   apiCallRatePerNode:
                     default: 20
                     description: |-
@@ -211,6 +204,7 @@ spec:
                     description: BuildConfigs controls BuildConfig resource patterns
                     properties:
                       count:
+                        default: 3
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -221,6 +215,7 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
+                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -241,13 +236,13 @@ spec:
                         minimum: 1
                         type: integer
                       updateFrequencyMax:
-                        default: 1800
+                        default: 600
                         description: UpdateFrequencyMax maximum time between updates
                           (seconds)
                         format: int32
                         type: integer
                       updateFrequencyMin:
-                        default: 300
+                        default: 120
                         description: UpdateFrequencyMin minimum time between updates
                           (seconds)
                         format: int32
@@ -257,6 +252,7 @@ spec:
                     description: ConfigMaps controls ConfigMap resource patterns
                     properties:
                       count:
+                        default: 3
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -267,6 +263,7 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
+                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -287,13 +284,13 @@ spec:
                         minimum: 1
                         type: integer
                       updateFrequencyMax:
-                        default: 1800
+                        default: 600
                         description: UpdateFrequencyMax maximum time between updates
                           (seconds)
                         format: int32
                         type: integer
                       updateFrequencyMin:
-                        default: 300
+                        default: 120
                         description: UpdateFrequencyMin minimum time between updates
                           (seconds)
                         format: int32
@@ -344,6 +341,7 @@ spec:
                     description: ImageStreams controls ImageStream resource patterns
                     properties:
                       count:
+                        default: 3
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -354,6 +352,7 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
+                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -374,13 +373,13 @@ spec:
                         minimum: 1
                         type: integer
                       updateFrequencyMax:
-                        default: 1800
+                        default: 600
                         description: UpdateFrequencyMax maximum time between updates
                           (seconds)
                         format: int32
                         type: integer
                       updateFrequencyMin:
-                        default: 300
+                        default: 120
                         description: UpdateFrequencyMin minimum time between updates
                           (seconds)
                         format: int32
@@ -553,6 +552,7 @@ spec:
                     description: Routes controls Route resource patterns
                     properties:
                       count:
+                        default: 3
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -563,6 +563,7 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
+                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -583,13 +584,13 @@ spec:
                         minimum: 1
                         type: integer
                       updateFrequencyMax:
-                        default: 1800
+                        default: 600
                         description: UpdateFrequencyMax maximum time between updates
                           (seconds)
                         format: int32
                         type: integer
                       updateFrequencyMin:
-                        default: 300
+                        default: 120
                         description: UpdateFrequencyMin minimum time between updates
                           (seconds)
                         format: int32
@@ -599,6 +600,7 @@ spec:
                     description: Secrets controls Secret resource patterns
                     properties:
                       count:
+                        default: 3
                         description: Count per namespace
                         format: int32
                         type: integer
@@ -609,6 +611,7 @@ spec:
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
                       enabled:
+                        default: true
                         description: Enabled controls whether this resource type is
                           generated
                         type: boolean
@@ -629,13 +632,13 @@ spec:
                         minimum: 1
                         type: integer
                       updateFrequencyMax:
-                        default: 1800
+                        default: 600
                         description: UpdateFrequencyMax maximum time between updates
                           (seconds)
                         format: int32
                         type: integer
                       updateFrequencyMin:
-                        default: 300
+                        default: 120
                         description: UpdateFrequencyMin minimum time between updates
                           (seconds)
                         format: int32

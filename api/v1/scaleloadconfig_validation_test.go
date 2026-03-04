@@ -38,18 +38,6 @@ func TestScaleLoadConfig_ValidateAPIRateConfiguration(t *testing.T) {
 			wantError: false,
 		},
 		{
-			name: "valid deprecated field only",
-			config: ScaleLoadConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: ScaleLoadConfigSpec{
-					LoadProfile: LoadProfile{
-						APICallRate: int32Ptr(20),
-					},
-				},
-			},
-			wantError: false,
-		},
-		{
 			name: "valid no rate fields (defaults)",
 			config: ScaleLoadConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
@@ -66,49 +54,6 @@ func TestScaleLoadConfig_ValidateAPIRateConfiguration(t *testing.T) {
 				Spec: ScaleLoadConfigSpec{
 					LoadProfile: LoadProfile{
 						APICallRateStatic:  int32Ptr(5000),
-						APICallRatePerNode: int32Ptr(100),
-					},
-				},
-			},
-			wantError:   true,
-			errorString: "only one API rate limiting approach can be specified",
-		},
-		{
-			name: "invalid all three fields",
-			config: ScaleLoadConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: ScaleLoadConfigSpec{
-					LoadProfile: LoadProfile{
-						APICallRate:        int32Ptr(20),
-						APICallRateStatic:  int32Ptr(5000),
-						APICallRatePerNode: int32Ptr(100),
-					},
-				},
-			},
-			wantError:   true,
-			errorString: "only one API rate limiting approach can be specified",
-		},
-		{
-			name: "invalid static and deprecated",
-			config: ScaleLoadConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: ScaleLoadConfigSpec{
-					LoadProfile: LoadProfile{
-						APICallRate:       int32Ptr(20),
-						APICallRateStatic: int32Ptr(5000),
-					},
-				},
-			},
-			wantError:   true,
-			errorString: "only one API rate limiting approach can be specified",
-		},
-		{
-			name: "invalid per-node and deprecated",
-			config: ScaleLoadConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: ScaleLoadConfigSpec{
-					LoadProfile: LoadProfile{
-						APICallRate:        int32Ptr(20),
 						APICallRatePerNode: int32Ptr(100),
 					},
 				},
@@ -143,17 +88,30 @@ func TestScaleLoadConfig_ValidateAPIRateConfiguration(t *testing.T) {
 			errorString: "apiCallRatePerNode must be positive",
 		},
 		{
-			name: "invalid negative deprecated rate",
+			name: "invalid negative per-node rate",
 			config: ScaleLoadConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: ScaleLoadConfigSpec{
 					LoadProfile: LoadProfile{
-						APICallRate: int32Ptr(-5),
+						APICallRatePerNode: int32Ptr(-50),
 					},
 				},
 			},
 			wantError:   true,
-			errorString: "apiCallRate must be positive",
+			errorString: "apiCallRatePerNode must be positive",
+		},
+		{
+			name: "invalid zero static rate",
+			config: ScaleLoadConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: ScaleLoadConfigSpec{
+					LoadProfile: LoadProfile{
+						APICallRateStatic: int32Ptr(0),
+					},
+				},
+			},
+			wantError:   true,
+			errorString: "apiCallRateStatic must be positive",
 		},
 	}
 

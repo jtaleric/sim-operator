@@ -237,7 +237,7 @@ func (r *ScaleLoadConfigReconciler) updateClusterAnnotations(node *corev1.Node) 
 	}
 
 	// Custom load generator tracking (always updated)
-	node.Annotations["scale.openshift.io/load-generator-managed"] = "true"
+	node.Annotations["scale.openshift.io/sim-operator-managed"] = "true"
 	node.Annotations["scale.openshift.io/last-seen"] = now.Format(time.RFC3339)
 
 	return true

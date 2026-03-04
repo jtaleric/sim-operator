@@ -118,11 +118,6 @@ func (in *LoadProfile) DeepCopyInto(out *LoadProfile) {
 		*out = new(int32)
 		**out = **in
 	}
-	if in.APICallRate != nil {
-		in, out := &in.APICallRate, &out.APICallRate
-		*out = new(int32)
-		**out = **in
-	}
 	if in.APICallRateStatic != nil {
 		in, out := &in.APICallRateStatic, &out.APICallRateStatic
 		*out = new(int32)

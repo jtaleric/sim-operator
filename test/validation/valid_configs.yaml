@@ -50,30 +50,6 @@ spec:
     enabled: true
 
 ---
-# VALID: Only deprecated field set (backward compatibility)
-apiVersion: scale.openshift.io/v1
-kind: ScaleLoadConfig
-metadata:
-  name: valid-deprecated-only
-spec:
-  enabled: true
-  kwokNodeSelector:
-    type: "kwok"
-  loadProfile:
-    profile: "production"
-    apiCallRate: 20              # ✅ Only deprecated field (allowed for backward compatibility)
-  namespaceConfig:
-    namespacePrefix: "test-"
-  annotationChurn:
-    enabled: false  # Disable for testing focus
-  resourceChurn:
-    configMaps:
-      enabled: true
-      count: 1
-  cleanupConfig:
-    enabled: true
-
----
 # VALID: No rate fields set (uses defaults)
 apiVersion: scale.openshift.io/v1
 kind: ScaleLoadConfig

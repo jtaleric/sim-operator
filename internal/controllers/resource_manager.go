@@ -106,6 +106,14 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 
 	log := r.Log.WithName("configmap-manager").WithValues("namespace", namespace, "targetCount", targetCount)
 
+	// Check if it's time to perform configmap operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "configMaps", config.Spec.ResourceChurn.ConfigMaps.UpdateFrequencyMin, config.Spec.ResourceChurn.ConfigMaps.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping configmap operations - not within update frequency window")
+		return r.getCurrentResourceCount(ctx, config, namespace, "configMaps")
+	}
+
+	log.V(1).Info("Performing configmap operations within update frequency window")
+
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "configMaps", targetCount, config.Spec.ResourceChurn.ConfigMaps.Maximum)
 	if err != nil {
@@ -139,6 +147,9 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	var created, deleted, apiCalls int32
 	apiCalls++ // List operation
 
+	// Update last operation time for this resource type in this namespace
+	r.updateLastResourceOperation(namespace, "configMaps")
+
 	log.V(1).Info("ConfigMap management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
@@ -160,7 +171,8 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		toDelete := int32(currentCount) - targetCount
-		for i := int32(len(configMapList.Items)) - 1; i >= targetCount; i-- {
+		var deleted int32
+		for i := int32(len(configMapList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
 			if err := r.Delete(ctx, &configMapList.Items[i]); err != nil {
 				log.Error(err, "Failed to delete ConfigMap", "name", configMapList.Items[i].Name, "deleted", deleted)
 				return int32(currentCount) - deleted, fmt.Errorf("failed to delete ConfigMap: %w", err)
@@ -169,7 +181,7 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 			deleted++
 			apiCalls++
 		}
-		log.V(1).Info("ConfigMaps deleted", "count", toDelete, "apiCalls", deleted)
+		log.V(1).Info("ConfigMaps deleted", "count", deleted, "apiCalls", deleted)
 	}
 
 	// Randomly update some ConfigMaps to simulate churn
@@ -192,7 +204,7 @@ func (r *ScaleLoadConfigReconciler) manageConfigMaps(ctx context.Context,
 
 // generateConfigMap creates a realistic ConfigMap resource
 func (r *ScaleLoadConfigReconciler) generateConfigMap(config *scalev1.ScaleLoadConfig, namespace string, index int32) *corev1.ConfigMap {
-	name := fmt.Sprintf("load-config-%d", index)
+	name := fmt.Sprintf("sim-configmap-%d", index)
 
 	// Generate realistic configuration data
 	configData := map[string]string{
@@ -209,7 +221,7 @@ func (r *ScaleLoadConfigReconciler) generateConfigMap(config *scalev1.ScaleLoadC
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "configmap",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "configuration",
 			},
 		},
@@ -222,6 +234,14 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
 	log := r.Log.WithName("secret-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// Check if it's time to perform secret operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "secrets", config.Spec.ResourceChurn.Secrets.UpdateFrequencyMin, config.Spec.ResourceChurn.Secrets.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping secret operations - not within update frequency window")
+		return r.getCurrentResourceCount(ctx, config, namespace, "secrets")
+	}
+
+	log.V(1).Info("Performing secret operations within update frequency window")
 
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "secrets", targetCount, config.Spec.ResourceChurn.Secrets.Maximum)
@@ -255,6 +275,9 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	var created, deleted, apiCalls int32
 	apiCalls++ // List operation
 
+	// Update last operation time for this resource type in this namespace
+	r.updateLastResourceOperation(namespace, "secrets")
+
 	log.V(1).Info("Secret management starting", "current", currentCount, "target", targetCount)
 
 	// Scale up if needed
@@ -276,7 +299,8 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		toDelete := int32(currentCount) - targetCount
-		for i := int32(len(secretList.Items)) - 1; i >= targetCount; i-- {
+		var deleted int32
+		for i := int32(len(secretList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
 			if err := r.Delete(ctx, &secretList.Items[i]); err != nil {
 				log.Error(err, "Failed to delete Secret", "name", secretList.Items[i].Name, "deleted", deleted)
 				return int32(currentCount) - deleted, fmt.Errorf("failed to delete Secret: %w", err)
@@ -285,7 +309,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 			deleted++
 			apiCalls++
 		}
-		log.V(1).Info("Secrets deleted", "count", toDelete, "apiCalls", deleted)
+		log.V(1).Info("Secrets deleted", "count", deleted, "apiCalls", deleted)
 	}
 
 	// Simulate secret rotation
@@ -308,7 +332,7 @@ func (r *ScaleLoadConfigReconciler) manageSecrets(ctx context.Context,
 
 // generateSecret creates a realistic Secret resource
 func (r *ScaleLoadConfigReconciler) generateSecret(config *scalev1.ScaleLoadConfig, namespace string, index int32) *corev1.Secret {
-	name := fmt.Sprintf("load-secret-%d", index)
+	name := fmt.Sprintf("sim-secret-%d", index)
 
 	secretData := map[string][]byte{
 		"username":    []byte(fmt.Sprintf("user-%d", index)),
@@ -325,7 +349,7 @@ func (r *ScaleLoadConfigReconciler) generateSecret(config *scalev1.ScaleLoadConf
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "secret",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "credentials",
 			},
 		},
@@ -338,6 +362,17 @@ func (r *ScaleLoadConfigReconciler) generateSecret(config *scalev1.ScaleLoadConf
 func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	log := r.Log.WithName("route-manager").WithValues("namespace", namespace)
+
+	// Check if it's time to perform route operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "routes", config.Spec.ResourceChurn.Routes.UpdateFrequencyMin, config.Spec.ResourceChurn.Routes.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping route operations - not within update frequency window")
+		// Return current count without performing any operations
+		return r.getCurrentResourceCount(ctx, config, namespace, "routes")
+	}
+
+	log.V(1).Info("Performing route operations within update frequency window")
+
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "routes", targetCount, config.Spec.ResourceChurn.Routes.Maximum)
 	if err != nil {
@@ -345,7 +380,6 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	}
 
 	if effectiveTargetCount != targetCount {
-		log := r.Log.WithName("route-manager").WithValues("namespace", namespace)
 		log.Info("Route creation limited by maximum",
 			"requestedCount", targetCount,
 			"effectiveCount", effectiveTargetCount,
@@ -369,70 +403,81 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 
 	currentCount := len(routeList.Items)
 
+	log.V(1).Info("Route management starting", "current", currentCount, "target", targetCount)
+
+	// Update last operation time for this resource type in this namespace
+	r.updateLastResourceOperation(namespace, "routes")
+
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
+		var created int32
 		for i := int32(currentCount); i < targetCount; i++ {
 			// First create the Service that the Route will reference
 			service := r.generateService(config, namespace, i)
 			if err := r.Create(ctx, service); err != nil {
 				// Check if the service already exists
 				if !errors.IsAlreadyExists(err) {
-					return int32(currentCount), fmt.Errorf("failed to create Service: %w", err)
+					return int32(currentCount) + created, fmt.Errorf("failed to create Service: %w", err)
 				}
 			} else {
 				r.recordAPICall(config, 1) // Service create operation
 			}
 
-			// Then create the Route
-			route := r.generateRoute(config, namespace, i)
+			// Then create the Route that references the service by name
+			route := r.generateRouteForService(config, namespace, i, service.Name)
 			if err := r.Create(ctx, route); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to create Route: %w", err)
+				return int32(currentCount) + created, fmt.Errorf("failed to create Route: %w", err)
 			}
 			r.recordAPICall(config, 1) // Route create operation
+			created++
 		}
+		log.V(1).Info("Routes created", "count", toCreate, "apiCalls", created*2) // *2 for service+route
 	}
 
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
-		for i := int32(len(routeList.Items)) - 1; i >= targetCount; i-- {
+		toDelete := int32(currentCount) - targetCount
+		var deleted int32
+		for i := int32(len(routeList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
+			route := &routeList.Items[i]
+			
+			// Get the service name that this route references
+			serviceName := route.Spec.To.Name
+			
 			// Delete the Route first
-			if err := r.Delete(ctx, &routeList.Items[i]); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to delete Route: %w", err)
+			if err := r.Delete(ctx, route); err != nil {
+				return int32(currentCount) - deleted, fmt.Errorf("failed to delete Route: %w", err)
 			}
 			r.recordAPICall(config, 1) // Route delete operation
 
-			// Delete corresponding Services by label selector (services are created with matching labels)
-			serviceList := &corev1.ServiceList{}
-			serviceListOpts := &client.ListOptions{
-				Namespace: namespace,
-			}
-			client.MatchingLabels{
-				"scale.openshift.io/managed-by":    config.Name,
-				"scale.openshift.io/resource-type": "service",
-			}.ApplyToList(serviceListOpts)
-
-			if err := r.List(ctx, serviceList, serviceListOpts); err == nil {
-				// Delete services created for routes (with index matching the route)
-				for _, svc := range serviceList.Items {
-					if err := r.Delete(ctx, &svc); err != nil {
-						if !errors.IsNotFound(err) {
-							return int32(currentCount), fmt.Errorf("failed to delete Service %s: %w", svc.Name, err)
-						}
-					} else {
-						r.recordAPICall(config, 1) // Service delete operation
+			// Delete the specific service referenced by this route
+			if serviceName != "" {
+				service := &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      serviceName,
+						Namespace: namespace,
+					},
+				}
+				if err := r.Delete(ctx, service); err != nil {
+					if !errors.IsNotFound(err) {
+						return int32(currentCount) - deleted, fmt.Errorf("failed to delete Service %s: %w", serviceName, err)
 					}
+				} else {
+					r.recordAPICall(config, 1) // Service delete operation
 				}
 			}
+			deleted++
 		}
+		log.V(1).Info("Routes deleted", "count", deleted, "apiCalls", deleted*2) // *2 for service+route
 	}
 
 	return targetCount, nil
 }
 
-// generateRoute creates a realistic Route resource
-func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfig, namespace string, index int32) *routev1.Route {
-	name := fmt.Sprintf("load-route-%s-%d", generateRandomString(6), index)
-	serviceName := fmt.Sprintf("load-service-%s-%d", generateRandomString(6), index)
+// generateRouteForService creates a realistic Route resource that references a specific service
+func (r *ScaleLoadConfigReconciler) generateRouteForService(config *scalev1.ScaleLoadConfig, namespace string, index int32, serviceName string) *routev1.Route {
+	name := fmt.Sprintf("sim-route-%d", index)
 
 	return &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
@@ -442,7 +487,7 @@ func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfi
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "route",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "frontend",
 			},
 		},
@@ -463,7 +508,7 @@ func (r *ScaleLoadConfigReconciler) generateRoute(config *scalev1.ScaleLoadConfi
 
 // generateService creates a Service resource for the Route to reference
 func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadConfig, namespace string, index int32) *corev1.Service {
-	name := fmt.Sprintf("load-service-%s-%d", generateRandomString(6), index)
+	name := fmt.Sprintf("sim-service-%d", index)
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -473,13 +518,13 @@ func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadCon
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "service",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "backend",
 			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				"app.kubernetes.io/name": fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name": fmt.Sprintf("sim-app-%d", index),
 			},
 			Ports: []corev1.ServicePort{
 				{
@@ -498,6 +543,16 @@ func (r *ScaleLoadConfigReconciler) generateService(config *scalev1.ScaleLoadCon
 func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	log := r.Log.WithName("imagestream-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// Check if it's time to perform imagestream operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "imageStreams", config.Spec.ResourceChurn.ImageStreams.UpdateFrequencyMin, config.Spec.ResourceChurn.ImageStreams.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping imagestream operations - not within update frequency window")
+		return r.getCurrentResourceCount(ctx, config, namespace, "imageStreams")
+	}
+
+	log.V(1).Info("Performing imagestream operations within update frequency window")
+
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "imageStreams", targetCount, config.Spec.ResourceChurn.ImageStreams.Maximum)
 	if err != nil {
@@ -505,7 +560,6 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 	}
 
 	if effectiveTargetCount != targetCount {
-		log := r.Log.WithName("imagestream-manager").WithValues("namespace", namespace)
 		log.Info("ImageStream creation limited by maximum",
 			"requestedCount", targetCount,
 			"effectiveCount", effectiveTargetCount,
@@ -529,25 +583,35 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 
 	currentCount := len(imageStreamList.Items)
 
+	log.V(1).Info("ImageStream management starting", "current", currentCount, "target", targetCount)
+
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
+		var created int32
 		for i := int32(currentCount); i < targetCount; i++ {
 			imageStream := r.generateImageStream(config, namespace, i)
 			if err := r.Create(ctx, imageStream); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to create ImageStream: %w", err)
+				return int32(currentCount) + created, fmt.Errorf("failed to create ImageStream: %w", err)
 			}
 			r.recordAPICall(config, 1) // Create operation
+			created++
 		}
+		log.V(1).Info("ImageStreams created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
-		for i := int32(len(imageStreamList.Items)) - 1; i >= targetCount; i-- {
+		toDelete := int32(currentCount) - targetCount
+		var deleted int32
+		for i := int32(len(imageStreamList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
 			if err := r.Delete(ctx, &imageStreamList.Items[i]); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to delete ImageStream: %w", err)
+				return int32(currentCount) - deleted, fmt.Errorf("failed to delete ImageStream: %w", err)
 			}
 			r.recordAPICall(config, 1) // Delete operation
+			deleted++
 		}
+		log.V(1).Info("ImageStreams deleted", "count", deleted, "apiCalls", deleted)
 	}
 
 	return targetCount, nil
@@ -555,7 +619,7 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 
 // generateImageStream creates a realistic ImageStream resource
 func (r *ScaleLoadConfigReconciler) generateImageStream(config *scalev1.ScaleLoadConfig, namespace string, index int32) *imagev1.ImageStream {
-	name := fmt.Sprintf("load-image-%d", index)
+	name := fmt.Sprintf("sim-imagestream-%d", index)
 
 	return &imagev1.ImageStream{
 		ObjectMeta: metav1.ObjectMeta{
@@ -565,7 +629,7 @@ func (r *ScaleLoadConfigReconciler) generateImageStream(config *scalev1.ScaleLoa
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "imagestream",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "image",
 			},
 		},
@@ -590,6 +654,16 @@ func (r *ScaleLoadConfigReconciler) generateImageStream(config *scalev1.ScaleLoa
 func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
+	log := r.Log.WithName("buildconfig-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// Check if it's time to perform buildconfig operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "buildConfigs", config.Spec.ResourceChurn.BuildConfigs.UpdateFrequencyMin, config.Spec.ResourceChurn.BuildConfigs.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping buildconfig operations - not within update frequency window")
+		return r.getCurrentResourceCount(ctx, config, namespace, "buildConfigs")
+	}
+
+	log.V(1).Info("Performing buildconfig operations within update frequency window")
+
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "buildConfigs", targetCount, config.Spec.ResourceChurn.BuildConfigs.Maximum)
 	if err != nil {
@@ -597,7 +671,6 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 	}
 
 	if effectiveTargetCount != targetCount {
-		log := r.Log.WithName("buildconfig-manager").WithValues("namespace", namespace)
 		log.Info("BuildConfig creation limited by maximum",
 			"requestedCount", targetCount,
 			"effectiveCount", effectiveTargetCount,
@@ -621,25 +694,35 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 
 	currentCount := len(buildConfigList.Items)
 
+	log.V(1).Info("BuildConfig management starting", "current", currentCount, "target", targetCount)
+
 	// Scale up if needed
 	if int32(currentCount) < targetCount {
+		toCreate := targetCount - int32(currentCount)
+		var created int32
 		for i := int32(currentCount); i < targetCount; i++ {
 			buildConfig := r.generateBuildConfig(config, namespace, i)
 			if err := r.Create(ctx, buildConfig); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to create BuildConfig: %w", err)
+				return int32(currentCount) + created, fmt.Errorf("failed to create BuildConfig: %w", err)
 			}
 			r.recordAPICall(config, 1) // Create operation
+			created++
 		}
+		log.V(1).Info("BuildConfigs created", "count", toCreate, "apiCalls", created)
 	}
 
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
-		for i := int32(len(buildConfigList.Items)) - 1; i >= targetCount; i-- {
+		toDelete := int32(currentCount) - targetCount
+		var deleted int32
+		for i := int32(len(buildConfigList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
 			if err := r.Delete(ctx, &buildConfigList.Items[i]); err != nil {
-				return int32(currentCount), fmt.Errorf("failed to delete BuildConfig: %w", err)
+				return int32(currentCount) - deleted, fmt.Errorf("failed to delete BuildConfig: %w", err)
 			}
 			r.recordAPICall(config, 1) // Delete operation
+			deleted++
 		}
+		log.V(1).Info("BuildConfigs deleted", "count", deleted, "apiCalls", deleted)
 	}
 
 	return targetCount, nil
@@ -647,8 +730,8 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 
 // generateBuildConfig creates a realistic BuildConfig resource
 func (r *ScaleLoadConfigReconciler) generateBuildConfig(config *scalev1.ScaleLoadConfig, namespace string, index int32) *buildv1.BuildConfig {
-	name := fmt.Sprintf("load-build-%d", index)
-	imageStreamName := fmt.Sprintf("load-image-%d", index)
+	name := fmt.Sprintf("sim-buildconfig-%d", index)
+	imageStreamName := fmt.Sprintf("sim-imagestream-%d", index)
 
 	return &buildv1.BuildConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -658,7 +741,7 @@ func (r *ScaleLoadConfigReconciler) generateBuildConfig(config *scalev1.ScaleLoa
 				"scale.openshift.io/managed-by":    config.Name,
 				"scale.openshift.io/resource-type": "buildconfig",
 				"scale.openshift.io/created-by":    "sim-operator",
-				"app.kubernetes.io/name":           fmt.Sprintf("load-app-%d", index),
+				"app.kubernetes.io/name":           fmt.Sprintf("sim-app-%d", index),
 				"app.kubernetes.io/component":      "build",
 			},
 		},
@@ -764,17 +847,18 @@ func (r *ScaleLoadConfigReconciler) generateEvent(config *scalev1.ScaleLoadConfi
 	involvedObject := corev1.ObjectReference{
 		Kind:       "Pod",
 		Namespace:  namespace,
-		Name:       fmt.Sprintf("load-pod-%d", index),
+		Name:       fmt.Sprintf("sim-pod-%d", index),
 		APIVersion: "v1",
 	}
 
 	return &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("load-event-%d-%d", index, time.Now().Unix()),
+			Name:      fmt.Sprintf("sim-event-%d-%d", index, time.Now().Unix()),
 			Namespace: namespace,
 			Labels: map[string]string{
-				"scale.openshift.io/managed-by": config.Name,
-				"scale.openshift.io/created-by": "sim-operator",
+				"scale.openshift.io/managed-by":    config.Name,
+				"scale.openshift.io/resource-type": "event",
+				"scale.openshift.io/created-by":    "sim-operator",
 			},
 		},
 		InvolvedObject: involvedObject,
@@ -794,7 +878,7 @@ func (r *ScaleLoadConfigReconciler) generateEvent(config *scalev1.ScaleLoadConfi
 
 func generateAppProperties() string {
 	return fmt.Sprintf(`# Application Configuration
-app.name=load-generator-app
+app.name=sim-generator-app
 app.version=1.0.%d
 app.debug=false
 app.port=8080
@@ -827,7 +911,7 @@ spec:
 func generateSettingsJSON() string {
 	return fmt.Sprintf(`{
   "app": {
-    "name": "load-generator",
+    "name": "sim-generator",
     "version": "1.0.%d",
     "environment": "production"
   },
@@ -1138,6 +1222,150 @@ func (r *ScaleLoadConfigReconciler) recordAPICall(config *scalev1.ScaleLoadConfi
 	r.APICallRate.Observe(float64(callCount))
 }
 
+// Resource timing tracking for frequency-based operations
+var resourceLastOperationTimes = make(map[string]map[string]time.Time) // namespace -> resourceType -> lastTime
+var resourceTimingMutex sync.RWMutex
+
+// shouldPerformResourceOperation checks if enough time has passed since last operation for this resource type
+func (r *ScaleLoadConfigReconciler) shouldPerformResourceOperation(namespace, resourceType string, minFrequency, maxFrequency int32) bool {
+	resourceTimingMutex.RLock()
+	defer resourceTimingMutex.RUnlock()
+
+	// Initialize namespace map if it doesn't exist
+	if resourceLastOperationTimes[namespace] == nil {
+		return true // First time, always perform operation
+	}
+
+	lastTime, exists := resourceLastOperationTimes[namespace][resourceType]
+	if !exists {
+		return true // First time for this resource type, always perform operation
+	}
+
+	// Calculate random interval within the specified range
+	intervalRange := maxFrequency - minFrequency
+	var randomInterval int32
+	if intervalRange > 0 {
+		randomInterval = minFrequency + mathrand.Int31n(intervalRange)
+	} else {
+		randomInterval = minFrequency
+	}
+
+	timeSinceLastOperation := time.Since(lastTime)
+	requiredInterval := time.Duration(randomInterval) * time.Second
+
+	shouldPerform := timeSinceLastOperation >= requiredInterval
+
+	if shouldPerform {
+		r.Log.V(1).Info("Resource operation timing check",
+			"namespace", namespace,
+			"resourceType", resourceType,
+			"timeSinceLastOperation", timeSinceLastOperation.String(),
+			"requiredInterval", requiredInterval.String(),
+			"shouldPerform", shouldPerform)
+	}
+
+	return shouldPerform
+}
+
+// updateLastResourceOperation updates the last operation time for a resource type in a namespace
+func (r *ScaleLoadConfigReconciler) updateLastResourceOperation(namespace, resourceType string) {
+	resourceTimingMutex.Lock()
+	defer resourceTimingMutex.Unlock()
+
+	// Initialize namespace map if it doesn't exist
+	if resourceLastOperationTimes[namespace] == nil {
+		resourceLastOperationTimes[namespace] = make(map[string]time.Time)
+	}
+
+	resourceLastOperationTimes[namespace][resourceType] = time.Now()
+
+	r.Log.V(1).Info("Updated resource operation timestamp",
+		"namespace", namespace,
+		"resourceType", resourceType,
+		"timestamp", time.Now().Format(time.RFC3339))
+}
+
+// getCurrentResourceCount gets the current count of resources without performing any operations
+func (r *ScaleLoadConfigReconciler) getCurrentResourceCount(ctx context.Context, config *scalev1.ScaleLoadConfig, namespace, resourceType string) (int32, error) {
+	switch resourceType {
+	case "routes":
+		routeList := &routev1.RouteList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "route",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, routeList, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list routes: %w", err)
+		}
+		// Note: We still need this LIST call to get current count, but we're not performing any modifications
+		r.recordAPICall(config, 1)
+		return int32(len(routeList.Items)), nil
+	case "configMaps":
+		list := &corev1.ConfigMapList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "configmap",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, list, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list configmaps: %w", err)
+		}
+		r.recordAPICall(config, 1)
+		return int32(len(list.Items)), nil
+	case "secrets":
+		list := &corev1.SecretList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "secret",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, list, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list secrets: %w", err)
+		}
+		r.recordAPICall(config, 1)
+		return int32(len(list.Items)), nil
+	case "imageStreams":
+		list := &imagev1.ImageStreamList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "imagestream",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, list, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list imagestreams: %w", err)
+		}
+		r.recordAPICall(config, 1)
+		return int32(len(list.Items)), nil
+	case "buildConfigs":
+		list := &buildv1.BuildConfigList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "buildconfig",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, list, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list buildconfigs: %w", err)
+		}
+		r.recordAPICall(config, 1)
+		return int32(len(list.Items)), nil
+	case "pods":
+		list := &corev1.PodList{}
+		listOpts := &client.ListOptions{Namespace: namespace}
+		client.MatchingLabels{
+			"scale.openshift.io/managed-by":    config.Name,
+			"scale.openshift.io/resource-type": "pod",
+		}.ApplyToList(listOpts)
+		if err := r.List(ctx, list, listOpts); err != nil {
+			return 0, fmt.Errorf("failed to list pods: %w", err)
+		}
+		r.recordAPICall(config, 1)
+		return int32(len(list.Items)), nil
+	default:
+		return 0, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+}
+
 // getEffectiveAPIRate returns the effective API rate for the given configuration and node count
 func (r *ScaleLoadConfigReconciler) getEffectiveAPIRate(config *scalev1.ScaleLoadConfig, nodeCount int) (int32, string) {
 	var totalRate int32
@@ -1149,9 +1377,6 @@ func (r *ScaleLoadConfigReconciler) getEffectiveAPIRate(config *scalev1.ScaleLoa
 	} else if config.Spec.LoadProfile.APICallRatePerNode != nil {
 		totalRate = *config.Spec.LoadProfile.APICallRatePerNode * int32(nodeCount)
 		rateType = "per-node"
-	} else if config.Spec.LoadProfile.APICallRate != nil {
-		totalRate = *config.Spec.LoadProfile.APICallRate * int32(nodeCount)
-		rateType = "per-node-deprecated"
 	} else {
 		totalRate = 20 * int32(nodeCount)
 		rateType = "default-per-node"
@@ -1165,6 +1390,14 @@ func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
 	config *scalev1.ScaleLoadConfig, namespace string, targetCount int32) (int32, error) {
 
 	log := r.Log.WithName("pod-manager").WithValues("namespace", namespace, "targetCount", targetCount)
+
+	// Check if it's time to perform pod operations based on update frequency
+	if !r.shouldPerformResourceOperation(namespace, "pods", config.Spec.ResourceChurn.Pods.UpdateFrequencyMin, config.Spec.ResourceChurn.Pods.UpdateFrequencyMax) {
+		log.V(1).Info("Skipping pod operations - not within update frequency window")
+		return r.getCurrentResourceCount(ctx, config, namespace, "pods")
+	}
+
+	log.V(1).Info("Performing pod operations within update frequency window")
 
 	// Check maximum limit and adjust target count if needed
 	effectiveTargetCount, err := r.checkMaximumLimit(ctx, config, "pods", targetCount, config.Spec.ResourceChurn.Pods.Maximum)
@@ -1209,7 +1442,7 @@ func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
 		log.V(1).Info("Creating pods", "count", toCreate)
 
 		for i := int32(0); i < toCreate; i++ {
-			pod := r.generatePod(config, namespace, fmt.Sprintf("sim-pod-%s-%d", generateRandomString(6), i))
+			pod := r.generatePod(config, namespace, fmt.Sprintf("sim-pod-%d", i))
 			if err := r.Create(ctx, pod); err != nil {
 				log.Error(err, "Failed to create pod", "pod", pod.Name)
 				continue
@@ -1225,7 +1458,7 @@ func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
 		toDelete := int32(currentCount) - targetCount
 		log.V(1).Info("Deleting pods", "count", toDelete)
 
-		for i := int32(0); i < toDelete && i < int32(len(podList.Items)); i++ {
+		for i := int32(len(podList.Items)) - 1; i >= int32(len(podList.Items)) - toDelete && i >= 0; i-- {
 			pod := &podList.Items[i]
 			if err := r.Delete(ctx, pod); err != nil {
 				log.Error(err, "Failed to delete pod", "pod", pod.Name)
