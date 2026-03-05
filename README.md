@@ -98,40 +98,34 @@ EOF
 ### 3. Create Load Configuration
 
 ```bash
-# Apply production load profile
-oc apply -f config/samples/scale_v1_scaleloadconfig_production.yaml
+# Apply sample configuration
+oc apply -f config/samples/scale_v1_scaleloadconfig.yaml
 
 # Monitor load generation
 oc get scaleloadconfigs -o wide
 ```
 
-## Load Profiles
+## Configuration Examples
 
-### Production Profile (Recommended)
+### Recommended Configuration
 ```yaml
 loadProfile:
-  profile: "production"
-  namespacesPerNode: 0.6     # Based on 120-node cluster analysis
-  resourcesPerNamespace: 5   # Realistic OpenShift resource density
-  apiCallRate: 20           # Balanced API load
+  namespacesPerNode: "0.6"     # Based on 120-node cluster analysis (realistic)
+  apiCallRatePerNode: 50       # Balanced API load with auto-optimized reconciling
 ```
 
-### Development Profile
+### Light Load Configuration
 ```yaml
 loadProfile:
-  profile: "development"
-  namespacesPerNode: 0.2     # Light load for development
-  resourcesPerNamespace: 3   # Reduced complexity
-  apiCallRate: 10           # Lower frequency
+  namespacesPerNode: "0.2"     # Light namespace density 
+  apiCallRatePerNode: 20       # Conservative API rate
 ```
 
-### Extreme Profile
+### Heavy Load Configuration  
 ```yaml
 loadProfile:
-  profile: "extreme"
-  namespacesPerNode: 1.0     # Heavy load for stress testing
-  resourcesPerNamespace: 10  # High resource density
-  apiCallRate: 50           # Aggressive API calls
+  namespacesPerNode: "1.0"     # High namespace density
+  apiCallRatePerNode: 100      # Aggressive API rate for stress testing
 ```
 
 ## API Rate Limiting
@@ -204,32 +198,33 @@ spec:
     environment: "test"
 ```
 
-#### Load Profile Configuration
+#### Load Configuration
 
 Controls the overall scale and behavior of load generation:
 
 ```yaml
 loadProfile:
-  # Predefined profiles: development, staging, production, extreme
-  profile: "production"
-  
-  # Namespace scaling (critical parameter)
+  # Namespace density - how many namespaces per node
   namespacesPerNode: "0.5"  # String to support decimals (0.5 = 1 namespace per 2 nodes)
   
-  # Resource density per namespace
-  resourcesPerNamespace: 15  # Total resources created per namespace
-  
-  # API rate limiting (choose one method)
+  # API rate limiting (REQUIRED - choose one method)
+  # This controls reconcile frequency, concurrency, and overall load intensity
   apiCallRatePerNode: 50    # API calls per minute per node (scales with node count)
   # OR
   # apiCallRateStatic: 2000 # Fixed API calls per minute (doesn't scale)
 ```
 
-**Profile Defaults:**
-- **development**: 30s reconcile, lower resource density, 10 API calls/min/node
-- **staging**: 15s reconcile, moderate resources, 25 API calls/min/node  
-- **production**: 10s reconcile, realistic density, 50 API calls/min/node
-- **extreme**: 5s reconcile, high density, 100+ API calls/min/node
+**Configuration Guidelines:**
+- **namespacesPerNode**: Based on must-gather analysis showing ~0.6 namespaces per node
+  - Light load: 0.2-0.3 namespaces per node
+  - Medium load: 0.4-0.5 namespaces per node  
+  - Realistic load: 0.6 namespaces per node (recommended)
+  - Heavy load: 0.8-1.0+ namespaces per node
+
+**API Rate Controls Everything Else:**
+- **Reconcile Frequency**: Auto-calculated based on API capacity (typically 5-120 seconds)
+- **Concurrency**: Auto-calculated to prevent API server overload
+- **Load Intensity**: Higher API rates = more aggressive resource churn
 
 #### Namespace Configuration
 
@@ -655,7 +650,6 @@ cleanupConfig:
 ##### Small Clusters (< 50 nodes)
 ```yaml
 loadProfile:
-  profile: "development"
   namespacesPerNode: "0.2"      # 1 namespace per 5 nodes
   apiCallRatePerNode: 10        # Conservative API rate
 
@@ -674,7 +668,6 @@ resourceChurn:
 ##### Medium Clusters (50-200 nodes)
 ```yaml
 loadProfile:
-  profile: "production"
   namespacesPerNode: "0.5"      # 1 namespace per 2 nodes
   apiCallRatePerNode: 25
 
@@ -687,7 +680,6 @@ resourceChurn:
 ##### Large Clusters (200+ nodes)
 ```yaml
 loadProfile:
-  profile: "extreme"
   namespacesPerNode: "0.8"      # High density
   apiCallRatePerNode: 50
 
@@ -711,7 +703,7 @@ spec:
     type: "kwok"
   
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     namespacesPerNode: "0.5"     # Would normally create 50 namespaces for 100 nodes
     apiCallRatePerNode: 30
   
@@ -777,7 +769,7 @@ spec:
     type: "kwok"
   
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     namespacesPerNode: "0.3"
     apiCallRatePerNode: 40
   
@@ -827,7 +819,7 @@ spec:
     type: "kwok"
   
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     namespacesPerNode: "1.0"     # High tenant density
     apiCallRatePerNode: 30
   
@@ -895,7 +887,7 @@ spec:
     type: "kwok"
   
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     namespacesPerNode: "0.4"
     apiCallRatePerNode: 35
   
