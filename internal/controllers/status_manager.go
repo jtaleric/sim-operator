@@ -65,6 +65,11 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	// Update conditions
 	latestConfig.Status.Conditions = r.updateConditions(latestConfig, kwokNodeCount)
 
+	// Update deletion status if deletion manager is available
+	if r.deletionManager != nil {
+		latestConfig.Status.DeletionStatus = r.deletionManager.GetDeletionStatus()
+	}
+
 	// Update Prometheus metrics
 	r.updatePrometheusMetrics(latestConfig)
 

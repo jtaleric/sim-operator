@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	buildv1 "github.com/openshift/api/build/v1"
 	imagev1 "github.com/openshift/api/image/v1"
 	routev1 "github.com/openshift/api/route/v1"
@@ -438,41 +439,75 @@ func (r *ScaleLoadConfigReconciler) manageRoutes(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		toDelete := int32(currentCount) - targetCount
-		var deleted int32
-		for i := int32(len(routeList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
-			route := &routeList.Items[i]
-			
-			// Get the service name that this route references
-			serviceName := route.Spec.To.Name
-			
-			// Delete the Route first
-			if err := r.Delete(ctx, route); err != nil {
-				return int32(currentCount) - deleted, fmt.Errorf("failed to delete Route: %w", err)
-			}
-			r.recordAPICall(config, 1) // Route delete operation
 
-			// Delete the specific service referenced by this route
-			if serviceName != "" {
-				service := &corev1.Service{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      serviceName,
-						Namespace: namespace,
-					},
-				}
-				if err := r.Delete(ctx, service); err != nil {
-					if !errors.IsNotFound(err) {
-						return int32(currentCount) - deleted, fmt.Errorf("failed to delete Service %s: %w", serviceName, err)
-					}
-				} else {
-					r.recordAPICall(config, 1) // Service delete operation
-				}
-			}
-			deleted++
+		// Check if we can perform deletion safely
+		if !r.deletionManager.CanPerformDeletion("routes", config) {
+			log.V(1).Info("Cannot perform route deletion due to safety constraints, skipping",
+				"currentCount", currentCount, "targetCount", targetCount)
+			return int32(currentCount), nil
 		}
-		log.V(1).Info("Routes deleted", "count", deleted, "apiCalls", deleted*2) // *2 for service+route
+
+		// Use enhanced deletion if safe deletion is enabled
+		if config.Spec.ResourceChurn.Routes.SafeDeletionEnabled {
+			// Convert routes to client.Object slice
+			routeObjects := make([]client.Object, len(routeList.Items))
+			for i := range routeList.Items {
+				routeObjects[i] = &routeList.Items[i]
+			}
+
+			if err := r.deletionManager.DeleteResourcesBatched(ctx, config, routeObjects, "routes", toDelete); err != nil {
+				return int32(currentCount), fmt.Errorf("failed to delete routes with enhanced deletion: %w", err)
+			}
+
+			log.V(1).Info("Routes deleted with enhanced batching", "targetDeleted", toDelete)
+		} else {
+			// Use legacy deletion for backward compatibility
+			deleted := r.deleteRoutesLegacy(ctx, config, routeList.Items, toDelete, log)
+			log.V(1).Info("Routes deleted", "count", deleted, "apiCalls", deleted*2) // *2 for service+route
+		}
 	}
 
 	return targetCount, nil
+}
+
+// deleteRoutesLegacy provides backward compatibility for route deletion
+func (r *ScaleLoadConfigReconciler) deleteRoutesLegacy(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	routes []routev1.Route, toDelete int32, log logr.Logger) int32 {
+
+	var deleted int32
+	for i := int32(len(routes)) - 1; i >= 0 && deleted < toDelete; i-- {
+		route := &routes[i]
+
+		// Get the service name that this route references
+		serviceName := route.Spec.To.Name
+
+		// Delete the Route first
+		if err := r.Delete(ctx, route); err != nil {
+			log.Error(err, "Failed to delete Route", "name", route.Name)
+			continue
+		}
+		r.recordAPICall(config, 1) // Route delete operation
+
+		// Delete the specific service referenced by this route
+		if serviceName != "" {
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName,
+					Namespace: route.Namespace,
+				},
+			}
+			if err := r.Delete(ctx, service); err != nil {
+				if !errors.IsNotFound(err) {
+					log.Error(err, "Failed to delete Service", "service", serviceName, "route", route.Name)
+				}
+			} else {
+				r.recordAPICall(config, 1) // Service delete operation
+			}
+		}
+		deleted++
+	}
+
+	return deleted
 }
 
 // generateRouteForService creates a realistic Route resource that references a specific service
@@ -603,18 +638,54 @@ func (r *ScaleLoadConfigReconciler) manageImageStreams(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		toDelete := int32(currentCount) - targetCount
-		var deleted int32
-		for i := int32(len(imageStreamList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
-			if err := r.Delete(ctx, &imageStreamList.Items[i]); err != nil {
-				return int32(currentCount) - deleted, fmt.Errorf("failed to delete ImageStream: %w", err)
-			}
-			r.recordAPICall(config, 1) // Delete operation
-			deleted++
+
+		// Check if we can perform deletion safely
+		if !r.deletionManager.CanPerformDeletion("imageStreams", config) {
+			log.V(1).Info("Cannot perform imagestream deletion due to safety constraints, skipping",
+				"currentCount", currentCount, "targetCount", targetCount)
+			return int32(currentCount), nil
 		}
-		log.V(1).Info("ImageStreams deleted", "count", deleted, "apiCalls", deleted)
+
+		// Use enhanced deletion if safe deletion is enabled
+		if config.Spec.ResourceChurn.ImageStreams.SafeDeletionEnabled {
+			// Convert imagestreams to client.Object slice
+			imageStreamObjects := make([]client.Object, len(imageStreamList.Items))
+			for i := range imageStreamList.Items {
+				imageStreamObjects[i] = &imageStreamList.Items[i]
+			}
+
+			if err := r.deletionManager.DeleteResourcesBatched(ctx, config, imageStreamObjects, "imageStreams", toDelete); err != nil {
+				return int32(currentCount), fmt.Errorf("failed to delete imagestreams with enhanced deletion: %w", err)
+			}
+
+			log.V(1).Info("ImageStreams deleted with enhanced batching", "targetDeleted", toDelete)
+		} else {
+			// Use legacy deletion for backward compatibility
+			deleted := r.deleteImageStreamsLegacy(ctx, config, imageStreamList.Items, toDelete, log)
+			log.V(1).Info("ImageStreams deleted", "count", deleted, "apiCalls", deleted)
+		}
 	}
 
 	return targetCount, nil
+}
+
+// deleteImageStreamsLegacy provides backward compatibility for imagestream deletion
+func (r *ScaleLoadConfigReconciler) deleteImageStreamsLegacy(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	imageStreams []imagev1.ImageStream, toDelete int32, log logr.Logger) int32 {
+
+	var deleted int32
+	for i := int32(len(imageStreams)) - 1; i >= 0 && deleted < toDelete; i-- {
+		imageStream := &imageStreams[i]
+
+		if err := r.Delete(ctx, imageStream); err != nil {
+			log.Error(err, "Failed to delete ImageStream", "name", imageStream.Name)
+			continue
+		}
+		r.recordAPICall(config, 1) // Delete operation
+		deleted++
+	}
+
+	return deleted
 }
 
 // generateImageStream creates a realistic ImageStream resource
@@ -714,18 +785,54 @@ func (r *ScaleLoadConfigReconciler) manageBuildConfigs(ctx context.Context,
 	// Scale down if needed
 	if int32(currentCount) > targetCount {
 		toDelete := int32(currentCount) - targetCount
-		var deleted int32
-		for i := int32(len(buildConfigList.Items)) - 1; i >= targetCount && deleted < toDelete; i-- {
-			if err := r.Delete(ctx, &buildConfigList.Items[i]); err != nil {
-				return int32(currentCount) - deleted, fmt.Errorf("failed to delete BuildConfig: %w", err)
-			}
-			r.recordAPICall(config, 1) // Delete operation
-			deleted++
+
+		// Check if we can perform deletion safely
+		if !r.deletionManager.CanPerformDeletion("buildConfigs", config) {
+			log.V(1).Info("Cannot perform buildconfig deletion due to safety constraints, skipping",
+				"currentCount", currentCount, "targetCount", targetCount)
+			return int32(currentCount), nil
 		}
-		log.V(1).Info("BuildConfigs deleted", "count", deleted, "apiCalls", deleted)
+
+		// Use enhanced deletion if safe deletion is enabled
+		if config.Spec.ResourceChurn.BuildConfigs.SafeDeletionEnabled {
+			// Convert buildconfigs to client.Object slice
+			buildConfigObjects := make([]client.Object, len(buildConfigList.Items))
+			for i := range buildConfigList.Items {
+				buildConfigObjects[i] = &buildConfigList.Items[i]
+			}
+
+			if err := r.deletionManager.DeleteResourcesBatched(ctx, config, buildConfigObjects, "buildConfigs", toDelete); err != nil {
+				return int32(currentCount), fmt.Errorf("failed to delete buildconfigs with enhanced deletion: %w", err)
+			}
+
+			log.V(1).Info("BuildConfigs deleted with enhanced batching", "targetDeleted", toDelete)
+		} else {
+			// Use legacy deletion for backward compatibility
+			deleted := r.deleteBuildConfigsLegacy(ctx, config, buildConfigList.Items, toDelete, log)
+			log.V(1).Info("BuildConfigs deleted", "count", deleted, "apiCalls", deleted)
+		}
 	}
 
 	return targetCount, nil
+}
+
+// deleteBuildConfigsLegacy provides backward compatibility for buildconfig deletion
+func (r *ScaleLoadConfigReconciler) deleteBuildConfigsLegacy(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	buildConfigs []buildv1.BuildConfig, toDelete int32, log logr.Logger) int32 {
+
+	var deleted int32
+	for i := int32(len(buildConfigs)) - 1; i >= 0 && deleted < toDelete; i-- {
+		buildConfig := &buildConfigs[i]
+
+		if err := r.Delete(ctx, buildConfig); err != nil {
+			log.Error(err, "Failed to delete BuildConfig", "name", buildConfig.Name)
+			continue
+		}
+		r.recordAPICall(config, 1) // Delete operation
+		deleted++
+	}
+
+	return deleted
 }
 
 // generateBuildConfig creates a realistic BuildConfig resource
@@ -1458,7 +1565,7 @@ func (r *ScaleLoadConfigReconciler) managePods(ctx context.Context,
 		toDelete := int32(currentCount) - targetCount
 		log.V(1).Info("Deleting pods", "count", toDelete)
 
-		for i := int32(len(podList.Items)) - 1; i >= int32(len(podList.Items)) - toDelete && i >= 0; i-- {
+		for i := int32(len(podList.Items)) - 1; i >= int32(len(podList.Items))-toDelete && i >= 0; i-- {
 			pod := &podList.Items[i]
 			if err := r.Delete(ctx, pod); err != nil {
 				log.Error(err, "Failed to delete pod", "pod", pod.Name)
@@ -1814,4 +1921,302 @@ func (r *ScaleLoadConfigReconciler) manageResourceTypesParallel(ctx context.Cont
 		"finalCounts", resourceCounts)
 
 	return resourceCounts
+}
+
+// Enhanced deletion helpers for complex OpenShift resources
+
+// DeletionManager handles batched and tracked deletion operations
+type DeletionManager struct {
+	reconciler *ScaleLoadConfigReconciler
+	mutex      sync.RWMutex
+	pending    map[string][]client.Object // resourceType -> objects waiting for deletion
+	inFlight   map[string]int32           // resourceType -> count currently being deleted
+	lastBatch  map[string]time.Time       // resourceType -> timestamp of last batch
+	errors     map[string][]string        // resourceType -> recent errors
+}
+
+// NewDeletionManager creates a new deletion manager
+func NewDeletionManager(reconciler *ScaleLoadConfigReconciler) *DeletionManager {
+	return &DeletionManager{
+		reconciler: reconciler,
+		pending:    make(map[string][]client.Object),
+		inFlight:   make(map[string]int32),
+		lastBatch:  make(map[string]time.Time),
+		errors:     make(map[string][]string),
+	}
+}
+
+// CanPerformDeletion checks if deletion can proceed based on timing and safety constraints
+func (dm *DeletionManager) CanPerformDeletion(resourceType string, config *scalev1.ScaleLoadConfig) bool {
+	dm.mutex.RLock()
+	defer dm.mutex.RUnlock()
+
+	var resourceConfig scalev1.ResourceTypeConfig
+	switch resourceType {
+	case "routes":
+		resourceConfig = config.Spec.ResourceChurn.Routes
+	case "imageStreams":
+		resourceConfig = config.Spec.ResourceChurn.ImageStreams
+	case "buildConfigs":
+		resourceConfig = config.Spec.ResourceChurn.BuildConfigs
+	default:
+		return true // Allow deletion for other resource types
+	}
+
+	// Check if safe deletion is enabled and enforce stricter controls
+	if resourceConfig.SafeDeletionEnabled {
+		// Don't allow deletion if there are already in-flight deletions
+		if dm.inFlight[resourceType] > 0 {
+			return false
+		}
+
+		// Enforce minimum delay between batches
+		minDelay := time.Duration(resourceConfig.DeletionBatchDelay) * time.Second
+		if minDelay == 0 {
+			minDelay = 30 * time.Second // Conservative default for complex resources
+		}
+
+		lastBatch, exists := dm.lastBatch[resourceType]
+		if exists && time.Since(lastBatch) < minDelay {
+			return false
+		}
+	}
+
+	return true
+}
+
+// DeleteResourcesBatched performs batched deletion with safety controls
+func (dm *DeletionManager) DeleteResourcesBatched(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	resources []client.Object, resourceType string, targetDeleteCount int32) error {
+
+	dm.mutex.Lock()
+	defer dm.mutex.Unlock()
+
+	var resourceConfig scalev1.ResourceTypeConfig
+	switch resourceType {
+	case "routes":
+		resourceConfig = config.Spec.ResourceChurn.Routes
+	case "imageStreams":
+		resourceConfig = config.Spec.ResourceChurn.ImageStreams
+	case "buildConfigs":
+		resourceConfig = config.Spec.ResourceChurn.BuildConfigs
+	default:
+		return fmt.Errorf("unsupported resource type for batched deletion: %s", resourceType)
+	}
+
+	log := dm.reconciler.Log.WithName("deletion-manager").WithValues("resourceType", resourceType)
+
+	batchSize := resourceConfig.DeletionBatchSize
+	if batchSize <= 0 {
+		batchSize = 3 // Conservative default
+	}
+
+	batchDelay := time.Duration(resourceConfig.DeletionBatchDelay) * time.Second
+	if batchDelay <= 0 {
+		batchDelay = 15 * time.Second // Conservative default
+	}
+
+	timeout := time.Duration(resourceConfig.DeletionTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 300 * time.Second // 5 minute default
+	}
+
+	log.Info("Starting batched deletion",
+		"totalResources", len(resources),
+		"targetDeleteCount", targetDeleteCount,
+		"batchSize", batchSize,
+		"batchDelay", batchDelay.String(),
+		"timeout", timeout.String())
+
+	deleted := int32(0)
+	resourcesLen := int32(len(resources))
+
+	// Ensure we don't try to delete more than available
+	if targetDeleteCount > resourcesLen {
+		targetDeleteCount = resourcesLen
+	}
+
+	for i := resourcesLen - 1; i >= 0 && deleted < targetDeleteCount; {
+		// Calculate batch end
+		batchStart := i - batchSize + 1
+		if batchStart < 0 {
+			batchStart = 0
+		}
+
+		currentBatchSize := i - batchStart + 1
+		if currentBatchSize > int32(targetDeleteCount-deleted) {
+			currentBatchSize = targetDeleteCount - deleted
+			batchStart = i - currentBatchSize + 1
+		}
+
+		log.V(1).Info("Processing deletion batch",
+			"batchStart", batchStart,
+			"batchEnd", i,
+			"batchSize", currentBatchSize,
+			"deleted", deleted,
+			"remaining", targetDeleteCount-deleted)
+
+		// Track in-flight deletions
+		dm.inFlight[resourceType] += currentBatchSize
+
+		// Delete current batch
+		batchCtx, cancel := context.WithTimeout(ctx, timeout)
+		batchDeleted := dm.deleteBatch(batchCtx, config, resources[batchStart:i+1], resourceType, currentBatchSize)
+		cancel()
+
+		// Update counters
+		deleted += batchDeleted
+		dm.inFlight[resourceType] -= currentBatchSize
+		i = batchStart - 1
+
+		// Update last batch timestamp
+		dm.lastBatch[resourceType] = time.Now()
+
+		log.V(1).Info("Batch deletion completed",
+			"batchDeleted", batchDeleted,
+			"totalDeleted", deleted,
+			"remaining", targetDeleteCount-deleted)
+
+		// Wait between batches (except for last batch)
+		if deleted < targetDeleteCount && i >= 0 {
+			log.V(1).Info("Waiting between deletion batches", "delay", batchDelay.String())
+			time.Sleep(batchDelay)
+		}
+	}
+
+	log.Info("Batched deletion completed",
+		"totalDeleted", deleted,
+		"targetDeleteCount", targetDeleteCount,
+		"success", deleted >= targetDeleteCount)
+
+	return nil
+}
+
+// deleteBatch deletes a single batch of resources
+func (dm *DeletionManager) deleteBatch(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	batch []client.Object, resourceType string, targetCount int32) int32 {
+
+	log := dm.reconciler.Log.WithName("batch-deleter").WithValues("resourceType", resourceType, "batchSize", len(batch))
+	var deleted int32
+
+	for i, resource := range batch {
+		if deleted >= targetCount {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info("Batch deletion cancelled due to timeout", "deleted", deleted, "remaining", len(batch)-i)
+			return deleted
+		default:
+		}
+
+		if err := dm.deleteResourceSafely(ctx, config, resource, resourceType); err != nil {
+			dm.recordDeletionError(resourceType, fmt.Sprintf("failed to delete %s: %v", resource.GetName(), err))
+			log.Error(err, "Failed to delete resource", "name", resource.GetName())
+			continue
+		}
+
+		deleted++
+		dm.reconciler.recordAPICall(config, 1)
+		log.V(2).Info("Resource deleted successfully", "name", resource.GetName())
+	}
+
+	return deleted
+}
+
+// deleteResourceSafely deletes a single resource with appropriate deletion policy
+func (dm *DeletionManager) deleteResourceSafely(ctx context.Context, config *scalev1.ScaleLoadConfig,
+	resource client.Object, resourceType string) error {
+
+	// Use background deletion for complex resources to avoid blocking API server
+	deletePolicy := metav1.DeletePropagationBackground
+
+	var resourceConfig scalev1.ResourceTypeConfig
+	switch resourceType {
+	case "routes":
+		resourceConfig = config.Spec.ResourceChurn.Routes
+	case "imageStreams":
+		resourceConfig = config.Spec.ResourceChurn.ImageStreams
+	case "buildConfigs":
+		resourceConfig = config.Spec.ResourceChurn.BuildConfigs
+	}
+
+	// Use async deletion if enabled
+	if resourceConfig.AsyncDeletion {
+		// Create a separate context to prevent timeout propagation
+		deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		deleteOpts := &client.DeleteOptions{
+			PropagationPolicy: &deletePolicy,
+		}
+
+		return dm.reconciler.Delete(deleteCtx, resource, deleteOpts)
+	}
+
+	// Synchronous deletion (default)
+	deleteOpts := &client.DeleteOptions{
+		PropagationPolicy: &deletePolicy,
+	}
+
+	return dm.reconciler.Delete(ctx, resource, deleteOpts)
+}
+
+// recordDeletionError records a deletion error for tracking
+func (dm *DeletionManager) recordDeletionError(resourceType, errorMsg string) {
+	dm.mutex.Lock()
+	defer dm.mutex.Unlock()
+
+	if dm.errors[resourceType] == nil {
+		dm.errors[resourceType] = make([]string, 0)
+	}
+
+	// Keep only last 5 errors per resource type
+	if len(dm.errors[resourceType]) >= 5 {
+		dm.errors[resourceType] = dm.errors[resourceType][1:]
+	}
+
+	dm.errors[resourceType] = append(dm.errors[resourceType], errorMsg)
+}
+
+// GetDeletionStatus returns current deletion status for status reporting
+func (dm *DeletionManager) GetDeletionStatus() scalev1.ResourceDeletionStatus {
+	dm.mutex.RLock()
+	defer dm.mutex.RUnlock()
+
+	status := scalev1.ResourceDeletionStatus{
+		PendingDeletions:  make(map[string]int32),
+		LastDeletionBatch: make(map[string]*metav1.Time),
+		DeletionErrors:    make(map[string][]string),
+		InFlightDeletions: make(map[string]int32),
+	}
+
+	// Copy pending deletions
+	for resourceType, objects := range dm.pending {
+		status.PendingDeletions[resourceType] = int32(len(objects))
+	}
+
+	// Copy last batch timestamps
+	for resourceType, timestamp := range dm.lastBatch {
+		t := metav1.NewTime(timestamp)
+		status.LastDeletionBatch[resourceType] = &t
+	}
+
+	// Copy errors
+	for resourceType, errors := range dm.errors {
+		if len(errors) > 0 {
+			status.DeletionErrors[resourceType] = make([]string, len(errors))
+			copy(status.DeletionErrors[resourceType], errors)
+		}
+	}
+
+	// Copy in-flight counts
+	for resourceType, count := range dm.inFlight {
+		if count > 0 {
+			status.InFlightDeletions[resourceType] = count
+		}
+	}
+
+	return status
 }

@@ -51,6 +51,9 @@ type ScaleLoadConfigReconciler struct {
 
 	// Logging optimization
 	reconcileCounter int
+
+	// Enhanced deletion manager for complex resources
+	deletionManager *DeletionManager
 }
 
 // ResourceManager handles lifecycle of resources for a specific namespace
@@ -209,8 +212,8 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Perform additional API calls to meet target rate if needed
 	r.ensureAPICallRate(ctx, config, len(kwokNodes))
 
-	// Calculate next reconcile interval based on load profile
-	nextReconcile := r.calculateReconcileInterval(config)
+	// Calculate next reconcile interval based on API rate capacity
+	nextReconcile := r.calculateReconcileInterval(config, len(kwokNodes))
 	log.V(1).Info("Next reconcile scheduled", "interval", nextReconcile)
 
 	return ctrl.Result{RequeueAfter: nextReconcile}, nil
@@ -236,26 +239,20 @@ func (r *ScaleLoadConfigReconciler) getKwokNodes(ctx context.Context, selector m
 	return nodeList.Items, nil
 }
 
-// calculateTargetNamespaces computes how many namespaces should exist based on node count and profile
+// calculateTargetNamespaces computes how many namespaces should exist based on node count and density
 func (r *ScaleLoadConfigReconciler) calculateTargetNamespaces(config *scalev1.ScaleLoadConfig, nodeCount int) int {
+	// Default to 0.6 based on must-gather analysis (72 namespaces on 126 nodes)
+	namespacesPerNodeStr := "0.6"
 	if config.Spec.LoadProfile.NamespacesPerNode != nil {
-		if namespacesPerNode, err := parseFloat(*config.Spec.LoadProfile.NamespacesPerNode); err == nil {
-			return int(math.Ceil(float64(nodeCount) * namespacesPerNode))
-		}
-		return int(math.Ceil(float64(nodeCount) * 0.6)) // fallback
+		namespacesPerNodeStr = *config.Spec.LoadProfile.NamespacesPerNode
 	}
 
-	// Default profiles based on must-gather analysis
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		return int(math.Ceil(float64(nodeCount) * 0.2)) // Light load
-	case "staging":
-		return int(math.Ceil(float64(nodeCount) * 0.4)) // Medium load
-	case "extreme":
-		return int(math.Ceil(float64(nodeCount) * 1.0)) // Heavy load
-	default: // "production"
-		return int(math.Ceil(float64(nodeCount) * 0.6)) // Based on 126 nodes -> 72 namespaces
+	if namespacesPerNode, err := parseFloat(namespacesPerNodeStr); err == nil {
+		return int(math.Ceil(float64(nodeCount) * namespacesPerNode))
 	}
+
+	// Fallback if parsing fails
+	return int(math.Ceil(float64(nodeCount) * 0.6))
 }
 
 // manageLoadResources creates/updates/deletes namespaces and their resources
@@ -278,9 +275,9 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	// Count terminating namespaces toward total to avoid creating replacements too early
 	currentNamespaceCount := currentActiveCount + terminatingCount
 
-	log.V(1).Info("Namespace status", 
-		"active", currentActiveCount, 
-		"terminating", terminatingCount, 
+	log.V(1).Info("Namespace status",
+		"active", currentActiveCount,
+		"terminating", terminatingCount,
 		"total", currentNamespaceCount,
 		"target", targetNamespaces)
 
@@ -334,11 +331,11 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	// Only consider excess ACTIVE namespaces for deletion (don't retry terminating ones)
 	if currentActiveCount > effectiveTarget {
 		namespacesToDelete := currentActiveCount - effectiveTarget
-		log.V(1).Info("Scaling down namespaces", 
-			"currentActive", currentActiveCount, 
+		log.V(1).Info("Scaling down namespaces",
+			"currentActive", currentActiveCount,
 			"terminating", terminatingCount,
 			"total", currentNamespaceCount,
-			"target", effectiveTarget, 
+			"target", effectiveTarget,
 			"toDelete", namespacesToDelete)
 
 		if err := r.deleteNamespaces(ctx, config, activeNamespaces, namespacesToDelete); err != nil {
@@ -349,8 +346,8 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		currentActiveCount -= namespacesToDelete
 		terminatingCount += namespacesToDelete
 		currentNamespaceCount = currentActiveCount + terminatingCount
-		log.V(1).Info("Namespaces deletion initiated", 
-			"deleted", namespacesDeleted, 
+		log.V(1).Info("Namespaces deletion initiated",
+			"deleted", namespacesDeleted,
 			"newActive", currentActiveCount,
 			"nowTerminating", terminatingCount,
 			"newTotal", currentNamespaceCount)
@@ -529,18 +526,84 @@ func (r *ScaleLoadConfigReconciler) deleteNamespaces(ctx context.Context, config
 	return nil
 }
 
-// calculateReconcileInterval determines how often to reconcile based on load profile
-func (r *ScaleLoadConfigReconciler) calculateReconcileInterval(config *scalev1.ScaleLoadConfig) time.Duration {
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		return 30 * time.Second // Less frequent for light load
-	case "staging":
-		return 15 * time.Second // Moderate frequency
-	case "extreme":
-		return 5 * time.Second // High frequency for heavy load
-	default: // "production"
-		return 10 * time.Second // Much more aggressive to spread API call load
+// calculateReconcileInterval determines how often to reconcile based on API rate capacity
+func (r *ScaleLoadConfigReconciler) calculateReconcileInterval(config *scalev1.ScaleLoadConfig, nodeCount int) time.Duration {
+	// Get total API rate capacity per minute
+	totalAPIRate := r.getTotalAPIRate(config, nodeCount)
+
+	// Estimate API calls needed per reconcile based on expected operations
+	estimatedCallsPerReconcile := r.estimateAPICallsPerReconcile(config, nodeCount)
+
+	// Calculate optimal interval to use ~80% of API capacity
+	if totalAPIRate > 0 && estimatedCallsPerReconcile > 0 {
+		// How many reconciles can we do per minute at 80% capacity?
+		reconcilesPerMinute := float64(totalAPIRate) * 0.8 / float64(estimatedCallsPerReconcile)
+
+		// Convert to seconds between reconciles
+		intervalSeconds := 60.0 / reconcilesPerMinute
+
+		// Clamp to reasonable bounds: minimum 5s, maximum 120s
+		if intervalSeconds < 5 {
+			intervalSeconds = 5
+		} else if intervalSeconds > 120 {
+			intervalSeconds = 120
+		}
+
+		return time.Duration(intervalSeconds) * time.Second
 	}
+
+	// Fallback to moderate frequency if calculations fail
+	return 30 * time.Second
+}
+
+// getTotalAPIRate calculates total API calls per minute across the cluster
+func (r *ScaleLoadConfigReconciler) getTotalAPIRate(config *scalev1.ScaleLoadConfig, nodeCount int) int32 {
+	if config.Spec.LoadProfile.APICallRateStatic != nil {
+		return *config.Spec.LoadProfile.APICallRateStatic
+	} else if config.Spec.LoadProfile.APICallRatePerNode != nil {
+		return *config.Spec.LoadProfile.APICallRatePerNode * int32(nodeCount)
+	}
+	// Default fallback
+	return int32(nodeCount) * 20 // 20 calls/min per node default
+}
+
+// estimateAPICallsPerReconcile estimates how many API calls a single reconcile will need
+func (r *ScaleLoadConfigReconciler) estimateAPICallsPerReconcile(config *scalev1.ScaleLoadConfig, nodeCount int) int {
+	// Base calls: list nodes, list namespaces, status update
+	baseAPIcalls := 3
+
+	// Estimate namespace count
+	namespaceCount := r.calculateTargetNamespaces(config, nodeCount)
+
+	// Estimate API calls per namespace (conservative estimate)
+	// - List resources: ~8 calls (pods, configmaps, secrets, routes, etc.)
+	// - Resource management: ~5-10 calls depending on churn
+	// - Events: ~1-2 calls
+	apiCallsPerNamespace := 15
+
+	// Annotation churn calls (if enabled)
+	annotationCalls := 0
+	if config.Spec.AnnotationChurn.Enabled {
+		// Conservative estimate: update ~10% of nodes per reconcile
+		annotationCalls = max(1, nodeCount/10)
+	}
+
+	total := baseAPIcalls + (namespaceCount * apiCallsPerNamespace) + annotationCalls
+
+	// Ensure minimum estimate
+	if total < 5 {
+		total = 5
+	}
+
+	return total
+}
+
+// Helper function for max
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ensureAPICallRate makes additional API calls to meet the configured target rate
@@ -748,7 +811,7 @@ func (r *ScaleLoadConfigReconciler) generateNamespace(config *scalev1.ScaleLoadC
 func (r *ScaleLoadConfigReconciler) manageNamespacesParallel(ctx context.Context, config *scalev1.ScaleLoadConfig, namespaces []corev1.Namespace) map[string]int {
 	log := r.Log.WithName("parallel-manager")
 
-	// Configure concurrency based on load profile and number of namespaces
+	// Configure concurrency based on API rate capacity and number of namespaces
 	maxConcurrency := r.calculateOptimalConcurrency(config, len(namespaces))
 	log.Info("Starting parallel namespace processing",
 		"namespaces", len(namespaces),
@@ -868,24 +931,24 @@ func (r *ScaleLoadConfigReconciler) processNamespaceWithResult(ctx context.Conte
 	}
 }
 
-// calculateOptimalConcurrency determines the optimal number of concurrent goroutines
+// calculateOptimalConcurrency determines the optimal number of concurrent goroutines based on API rate
 func (r *ScaleLoadConfigReconciler) calculateOptimalConcurrency(config *scalev1.ScaleLoadConfig, namespaceCount int) int {
-	// Base concurrency on load profile
-	var baseConcurrency int
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		baseConcurrency = 10 // Conservative for light load
-	case "staging":
-		baseConcurrency = 25 // Moderate parallelism
-	case "extreme":
-		baseConcurrency = 100 // Aggressive parallelism
-	default: // "production"
-		baseConcurrency = 50 // Balanced approach
+	// Base concurrency on available API rate capacity rather than arbitrary profile
+	totalAPIRate := r.getTotalAPIRate(config, 0) // Pass 0 since we don't have nodeCount here
+
+	// Conservative approach: allow ~5 API calls per concurrent goroutine per minute
+	// This prevents overwhelming the API server
+	baseConcurrency := int(totalAPIRate / 5)
+
+	// Apply reasonable bounds
+	if baseConcurrency < 5 {
+		baseConcurrency = 5 // Minimum reasonable concurrency
+	} else if baseConcurrency > 100 {
+		baseConcurrency = 100 // Maximum to avoid too many goroutines
 	}
 
-	// Adjust based on number of namespaces
+	// Don't create more goroutines than namespaces
 	if namespaceCount < baseConcurrency {
-		// Don't create more goroutines than namespaces
 		return namespaceCount
 	}
 
@@ -907,6 +970,9 @@ func parseFloat(s string) (float64, error) {
 func (r *ScaleLoadConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize metrics
 	r.initializeMetrics()
+
+	// Initialize deletion manager for complex resources
+	r.deletionManager = NewDeletionManager(r)
 
 	// Watch ScaleLoadConfig resources
 	// Build and return the controller
