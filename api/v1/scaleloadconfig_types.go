@@ -35,12 +35,7 @@ type ScaleLoadConfigSpec struct {
 
 // LoadProfile defines the overall load characteristics
 type LoadProfile struct {
-	// Profile selects predefined load patterns
-	// +kubebuilder:validation:Enum=development;staging;production;extreme
-	// +kubebuilder:default=production
-	Profile string `json:"profile,omitempty"`
-
-	// NamespacesPerNode controls namespace density (overrides profile defaults)
+	// NamespacesPerNode controls namespace density
 	// Based on must-gather analysis: ~0.6 namespaces per node (72/126)
 	// +kubebuilder:default="0.6"
 	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]+)?$`
@@ -49,7 +44,6 @@ type LoadProfile struct {
 	// ResourcesPerNamespace controls resource density per namespace
 	// +kubebuilder:default=5
 	ResourcesPerNamespace *int32 `json:"resourcesPerNamespace,omitempty"`
-
 
 	// APICallRateStatic sets a fixed total API call rate (calls per minute total)
 	// Takes precedence over APICallRatePerNode if both are set
@@ -173,6 +167,26 @@ type ResourceTypeConfig struct {
 	// +kubebuilder:default="0.1"
 	// +kubebuilder:validation:Pattern=`^(0(\.[0-9]+)?|1(\.0+)?)$`
 	DeleteRecreateChance string `json:"deleteRecreateChance,omitempty"`
+
+	// DeletionBatchSize controls how many resources to delete per batch
+	// +kubebuilder:default=5
+	DeletionBatchSize int32 `json:"deletionBatchSize,omitempty"`
+
+	// DeletionBatchDelay controls delay between deletion batches (seconds)
+	// +kubebuilder:default=10
+	DeletionBatchDelay int32 `json:"deletionBatchDelay,omitempty"`
+
+	// DeletionTimeout maximum time to wait for resource deletion (seconds)
+	// +kubebuilder:default=300
+	DeletionTimeout int32 `json:"deletionTimeout,omitempty"`
+
+	// AsyncDeletion enables non-blocking deletion for complex resources
+	// +kubebuilder:default=true
+	AsyncDeletion bool `json:"asyncDeletion,omitempty"`
+
+	// SafeDeletionEnabled enables enhanced safety controls for complex OpenShift resources
+	// +kubebuilder:default=false
+	SafeDeletionEnabled bool `json:"safeDeletionEnabled,omitempty"`
 }
 
 // EventsConfig controls Event resource generation
@@ -367,6 +381,9 @@ type ScaleLoadConfigStatus struct {
 
 	// Metrics contains performance metrics for the load generation
 	Metrics LoadGenerationMetrics `json:"metrics,omitempty"`
+
+	// DeletionStatus tracks ongoing deletion operations for complex resources
+	DeletionStatus ResourceDeletionStatus `json:"deletionStatus,omitempty"`
 }
 
 // ResourceCounts tracks counts of different resource types
@@ -423,12 +440,27 @@ type LoadGenerationMetrics struct {
 	ResourceDeletionRate string `json:"resourceDeletionRate"`
 }
 
+// ResourceDeletionStatus tracks ongoing deletion operations for complex resources
+type ResourceDeletionStatus struct {
+	// PendingDeletions resources marked for deletion but not yet removed
+	PendingDeletions map[string]int32 `json:"pendingDeletions,omitempty"`
+
+	// LastDeletionBatch timestamp of last deletion batch per resource type
+	LastDeletionBatch map[string]*metav1.Time `json:"lastDeletionBatch,omitempty"`
+
+	// DeletionErrors recent deletion errors per resource type
+	DeletionErrors map[string][]string `json:"deletionErrors,omitempty"`
+
+	// InFlightDeletions count of deletions currently in progress
+	InFlightDeletions map[string]int32 `json:"inFlightDeletions,omitempty"`
+}
+
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:scope=Cluster
 //+kubebuilder:printcolumn:name="KWOK Nodes",type="integer",JSONPath=".status.kwokNodeCount"
 //+kubebuilder:printcolumn:name="Namespaces",type="integer",JSONPath=".status.generatedNamespaces"
-//+kubebuilder:printcolumn:name="Profile",type="string",JSONPath=".spec.loadProfile.profile"
+//+kubebuilder:printcolumn:name="Namespaces/Node",type="string",JSONPath=".spec.loadProfile.namespacesPerNode"
 //+kubebuilder:printcolumn:name="Enabled",type="boolean",JSONPath=".spec.enabled"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:webhook:path=/validate-scale-openshift-io-v1-scaleloadconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=scale.openshift.io,resources=scaleloadconfigs,verbs=create;update,versions=v1,name=vscaleloadconfig.kb.io,admissionReviewVersions=v1
@@ -485,7 +517,6 @@ func (r *ScaleLoadConfig) validateAPIRateConfiguration() error {
 		setFields = append(setFields, "apiCallRatePerNode")
 	}
 
-
 	// Allow only one API rate field to be set
 	if fieldsSet > 1 {
 		return fmt.Errorf("only one API rate limiting approach can be specified, found: %v. Choose either 'apiCallRateStatic' for fixed total rate or 'apiCallRatePerNode' for node-scaling rate", setFields)
@@ -499,7 +530,6 @@ func (r *ScaleLoadConfig) validateAPIRateConfiguration() error {
 	if loadProfile.APICallRatePerNode != nil && *loadProfile.APICallRatePerNode <= 0 {
 		return fmt.Errorf("apiCallRatePerNode must be positive, got %d", *loadProfile.APICallRatePerNode)
 	}
-
 
 	return nil
 }

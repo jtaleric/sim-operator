@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,10 +17,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	scalev1 "github.com/jtaleric/sim-operator/api/v1"
 )
@@ -51,6 +56,13 @@ type ScaleLoadConfigReconciler struct {
 
 	// Logging optimization
 	reconcileCounter int
+	statusLogCounter int // used to log status every N reconciles
+
+	// Cached managed namespaces for current reconcile (avoids repeated getManagedNamespaces in checkMaximumLimit)
+	currentManagedNamespaces []corev1.Namespace
+
+	// Enhanced deletion manager for complex resources
+	deletionManager *DeletionManager
 }
 
 // ResourceManager handles lifecycle of resources for a specific namespace
@@ -81,6 +93,11 @@ type ResourceManager struct {
 func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("scaleloadconfig", req.NamespacedName)
 	startTime := time.Now()
+
+	// Add timeout to prevent infinite reconcile loops
+	timeout := 5 * time.Minute
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	defer func() {
 		duration := time.Since(startTime)
@@ -138,6 +155,11 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log.V(1).Info("Found KWOK nodes", "count", len(kwokNodes))
 	r.KwokNodeCount.Set(float64(len(kwokNodes)))
 
+	// Early status update with current node count to prevent stale status
+	if err := r.updateNodeCountStatus(ctx, config, len(kwokNodes)); err != nil {
+		log.Error(err, "Failed to update node count status early, continuing")
+	}
+
 	// Calculate target namespace count based on load profile
 	targetNamespaces := r.calculateTargetNamespaces(config, len(kwokNodes))
 
@@ -154,10 +176,28 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Note: Removed restrictive pre-flight API rate limiting to allow actual configured rates
 	// Resource managers will handle rate limiting individually with more accurate tracking
 
-	// Manage namespaces and resources
+	// Manage namespaces and resources with timeout protection
 	log.V(1).Info("Starting load resource management",
 		"targetNamespaces", targetNamespaces,
 		"kwokNodes", len(kwokNodes))
+
+	// Check if we're approaching timeout
+	if time.Since(startTime) > 4*time.Minute {
+		log.Info("Approaching reconcile timeout, skipping resource management this cycle")
+		// Return early with updated node count status
+		return r.calculateNextReconcileResult(config, len(kwokNodes))
+	}
+
+	// Check if we should throttle operations to avoid exceeding target API rate
+	if r.shouldThrottleOperations(config, len(kwokNodes)) {
+		log.Info("Throttling this reconcile cycle to control API rate")
+		// Return early with current status to avoid excessive API calls
+		_, err := r.updateStatus(ctx, config, len(kwokNodes), 0, make(map[string]int))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: r.calculateReconcileInterval(config, len(kwokNodes))}, nil
+	}
 
 	namespaceCount, resourceCounts, err := r.manageLoadResources(ctx, config, kwokNodes, targetNamespaces)
 	if err != nil {
@@ -199,6 +239,13 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Perform orphan cleanup if enabled
+	if config.Spec.CleanupConfig.OrphanCleanup {
+		if err := r.performOrphanCleanup(ctx, config); err != nil {
+			log.Error(err, "Failed to perform orphan cleanup, continuing")
+		}
+	}
+
 	// Perform namespace churn if enabled
 	if config.Spec.ResourceChurn.Namespaces.Enabled {
 		if err := r.performNamespaceChurn(ctx, config); err != nil {
@@ -209,53 +256,103 @@ func (r *ScaleLoadConfigReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Perform additional API calls to meet target rate if needed
 	r.ensureAPICallRate(ctx, config, len(kwokNodes))
 
-	// Calculate next reconcile interval based on load profile
-	nextReconcile := r.calculateReconcileInterval(config)
+	// Calculate next reconcile interval based on API rate capacity
+	nextReconcile := r.calculateReconcileInterval(config, len(kwokNodes))
 	log.V(1).Info("Next reconcile scheduled", "interval", nextReconcile)
 
 	return ctrl.Result{RequeueAfter: nextReconcile}, nil
 }
 
-// getKwokNodes retrieves nodes matching the KWOK selector
+// getKwokNodes retrieves nodes matching the KWOK selector with pagination support
 func (r *ScaleLoadConfigReconciler) getKwokNodes(ctx context.Context, selector map[string]string) ([]corev1.Node, error) {
-	nodeList := &corev1.NodeList{}
+	log := r.Log.WithName("node-lister")
 
 	if len(selector) == 0 {
 		selector = map[string]string{"type": "kwok"}
 	}
 
 	labelSelector := labels.SelectorFromSet(selector)
-	listOpts := &client.ListOptions{
-		LabelSelector: labelSelector,
+	var allNodes []corev1.Node
+
+	// Use pagination to handle large node lists
+	pageSize := int64(500) // Process in chunks of 500 nodes
+	continueToken := ""
+
+	for {
+		nodeList := &corev1.NodeList{}
+		listOpts := &client.ListOptions{
+			LabelSelector: labelSelector,
+			Raw: &metav1.ListOptions{
+				TimeoutSeconds: int64ptr(120), // Increased to 2 minutes for large clusters
+				Limit:          pageSize,
+				Continue:       continueToken,
+			},
+		}
+
+		log.V(2).Info("Listing KWOK nodes with pagination",
+			"selector", selector,
+			"pageSize", pageSize,
+			"continue", continueToken != "",
+			"currentTotal", len(allNodes))
+
+		startTime := time.Now()
+		err := r.List(ctx, nodeList, listOpts)
+		duration := time.Since(startTime)
+
+		if err != nil {
+			log.Error(err, "Failed to list KWOK nodes",
+				"selector", selector,
+				"duration", duration,
+				"page", continueToken != "")
+			return nil, fmt.Errorf("failed to list KWOK nodes: %w", err)
+		}
+
+		// Add nodes from this page
+		allNodes = append(allNodes, nodeList.Items...)
+
+		log.V(1).Info("Retrieved KWOK nodes page",
+			"pageCount", len(nodeList.Items),
+			"totalSoFar", len(allNodes),
+			"duration", duration,
+			"hasMore", nodeList.Continue != "")
+
+		// Check if we need to continue paginating
+		if nodeList.Continue == "" {
+			break // No more pages
+		}
+		continueToken = nodeList.Continue
+
+		// Prevent infinite loops
+		if len(allNodes) > 10000 {
+			log.Error(nil, "Too many nodes detected, stopping pagination", "count", len(allNodes))
+			break
+		}
 	}
 
-	if err := r.List(ctx, nodeList, listOpts); err != nil {
-		return nil, fmt.Errorf("failed to list KWOK nodes: %w", err)
-	}
+	log.Info("Successfully listed all KWOK nodes", "totalCount", len(allNodes))
 
-	return nodeList.Items, nil
+	return allNodes, nil
 }
 
-// calculateTargetNamespaces computes how many namespaces should exist based on node count and profile
+// Helper function to create int64 pointer
+func int64ptr(i int64) *int64 {
+	return &i
+}
+
+// calculateTargetNamespaces computes how many namespaces should exist based on node count and density
 func (r *ScaleLoadConfigReconciler) calculateTargetNamespaces(config *scalev1.ScaleLoadConfig, nodeCount int) int {
+	// Default to 0.6 based on must-gather analysis (72 namespaces on 126 nodes)
+	namespacesPerNodeStr := "0.6"
 	if config.Spec.LoadProfile.NamespacesPerNode != nil {
-		if namespacesPerNode, err := parseFloat(*config.Spec.LoadProfile.NamespacesPerNode); err == nil {
-			return int(math.Ceil(float64(nodeCount) * namespacesPerNode))
-		}
-		return int(math.Ceil(float64(nodeCount) * 0.6)) // fallback
+		namespacesPerNodeStr = *config.Spec.LoadProfile.NamespacesPerNode
 	}
 
-	// Default profiles based on must-gather analysis
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		return int(math.Ceil(float64(nodeCount) * 0.2)) // Light load
-	case "staging":
-		return int(math.Ceil(float64(nodeCount) * 0.4)) // Medium load
-	case "extreme":
-		return int(math.Ceil(float64(nodeCount) * 1.0)) // Heavy load
-	default: // "production"
-		return int(math.Ceil(float64(nodeCount) * 0.6)) // Based on 126 nodes -> 72 namespaces
+	if namespacesPerNode, err := parseFloat(namespacesPerNodeStr); err == nil {
+		return int(math.Ceil(float64(nodeCount) * namespacesPerNode))
 	}
+
+	// Fallback if parsing fails
+	return int(math.Ceil(float64(nodeCount) * 0.6))
 }
 
 // manageLoadResources creates/updates/deletes namespaces and their resources
@@ -273,14 +370,21 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	}
 	r.recordAPICall(config, 1) // List namespaces operation
 
+	// Cache for checkMaximumLimit to avoid repeated getManagedNamespaces per resource type per namespace
+	allManaged := make([]corev1.Namespace, 0, len(activeNamespaces)+len(terminatingNamespaces))
+	allManaged = append(allManaged, activeNamespaces...)
+	allManaged = append(allManaged, terminatingNamespaces...)
+	r.currentManagedNamespaces = allManaged
+	defer func() { r.currentManagedNamespaces = nil }()
+
 	currentActiveCount := len(activeNamespaces)
 	terminatingCount := len(terminatingNamespaces)
 	// Count terminating namespaces toward total to avoid creating replacements too early
 	currentNamespaceCount := currentActiveCount + terminatingCount
 
-	log.V(1).Info("Namespace status", 
-		"active", currentActiveCount, 
-		"terminating", terminatingCount, 
+	log.V(1).Info("Namespace status",
+		"active", currentActiveCount,
+		"terminating", terminatingCount,
 		"total", currentNamespaceCount,
 		"target", targetNamespaces)
 
@@ -334,11 +438,11 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 	// Only consider excess ACTIVE namespaces for deletion (don't retry terminating ones)
 	if currentActiveCount > effectiveTarget {
 		namespacesToDelete := currentActiveCount - effectiveTarget
-		log.V(1).Info("Scaling down namespaces", 
-			"currentActive", currentActiveCount, 
+		log.V(1).Info("Scaling down namespaces",
+			"currentActive", currentActiveCount,
 			"terminating", terminatingCount,
 			"total", currentNamespaceCount,
-			"target", effectiveTarget, 
+			"target", effectiveTarget,
 			"toDelete", namespacesToDelete)
 
 		if err := r.deleteNamespaces(ctx, config, activeNamespaces, namespacesToDelete); err != nil {
@@ -349,8 +453,8 @@ func (r *ScaleLoadConfigReconciler) manageLoadResources(ctx context.Context, con
 		currentActiveCount -= namespacesToDelete
 		terminatingCount += namespacesToDelete
 		currentNamespaceCount = currentActiveCount + terminatingCount
-		log.V(1).Info("Namespaces deletion initiated", 
-			"deleted", namespacesDeleted, 
+		log.V(1).Info("Namespaces deletion initiated",
+			"deleted", namespacesDeleted,
 			"newActive", currentActiveCount,
 			"nowTerminating", terminatingCount,
 			"newTotal", currentNamespaceCount)
@@ -529,21 +633,28 @@ func (r *ScaleLoadConfigReconciler) deleteNamespaces(ctx context.Context, config
 	return nil
 }
 
-// calculateReconcileInterval determines how often to reconcile based on load profile
-func (r *ScaleLoadConfigReconciler) calculateReconcileInterval(config *scalev1.ScaleLoadConfig) time.Duration {
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		return 30 * time.Second // Less frequent for light load
-	case "staging":
-		return 15 * time.Second // Moderate frequency
-	case "extreme":
-		return 5 * time.Second // High frequency for heavy load
-	default: // "production"
-		return 10 * time.Second // Much more aggressive to spread API call load
+// calculateReconcileInterval determines how often to reconcile based on API rate capacity
+func (r *ScaleLoadConfigReconciler) calculateReconcileInterval(config *scalev1.ScaleLoadConfig, nodeCount int) time.Duration {
+	// Fast reconcile for node detection scenarios
+	if nodeCount == 0 {
+		return 5 * time.Second // Faster for cleanup and node detection
+	}
+
+	// For active workload management, use a balanced approach
+	// that prioritizes responsiveness over pure API rate optimization
+
+	if nodeCount <= 100 {
+		return 5 * time.Second // Small clusters - very responsive
+	} else if nodeCount <= 1000 {
+		return 10 * time.Second // Medium clusters - responsive
+	} else {
+		return 15 * time.Second // Large clusters - still responsive but slightly slower
 	}
 }
 
-// ensureAPICallRate makes additional API calls to meet the configured target rate
+// ensureAPICallRate makes additional API calls to meet the configured target rate.
+// This creates synthetic load (e.g. List with Limit: 1) when real workload is below target;
+// it is intentional for rate-based testing. To avoid synthetic load, configure a lower target rate.
 func (r *ScaleLoadConfigReconciler) ensureAPICallRate(ctx context.Context, config *scalev1.ScaleLoadConfig, nodeCount int) {
 	now := time.Now()
 
@@ -563,6 +674,13 @@ func (r *ScaleLoadConfigReconciler) ensureAPICallRate(ctx context.Context, confi
 	callsNeeded := expectedCallsByNow - r.apiCallsThisMinute
 
 	if callsNeeded <= 0 {
+		// If we're significantly over target, warn and skip additional calls
+		if r.apiCallsThisMinute > r.targetAPICallsPerMinute*2 {
+			r.Log.WithName("rate-controller").Info("API call rate significantly above target - skipping additional calls to prevent overload",
+				"current", r.apiCallsThisMinute,
+				"target", r.targetAPICallsPerMinute,
+				"overagePercent", int(float64(r.apiCallsThisMinute-r.targetAPICallsPerMinute)/float64(r.targetAPICallsPerMinute)*100))
+		}
 		return // Already meeting or exceeding target
 	}
 
@@ -577,7 +695,8 @@ func (r *ScaleLoadConfigReconciler) ensureAPICallRate(ctx context.Context, confi
 	r.makeAdditionalAPICalls(ctx, config, callsNeeded)
 }
 
-// makeAdditionalAPICalls performs simple API operations to meet rate target
+// makeAdditionalAPICalls performs simple API operations (List with Limit: 1) to meet the configured rate target.
+// This is synthetic load; see ensureAPICallRate for behavior and alternatives.
 func (r *ScaleLoadConfigReconciler) makeAdditionalAPICalls(ctx context.Context, config *scalev1.ScaleLoadConfig, count int32) {
 	log := r.Log.WithName("rate-controller")
 
@@ -742,13 +861,59 @@ func (r *ScaleLoadConfigReconciler) generateNamespace(config *scalev1.ScaleLoadC
 	return namespace
 }
 
-// generateRandomString creates a random string for unique naming
+// updateNodeCountStatus provides early status update for node count to prevent stale status
+func (r *ScaleLoadConfigReconciler) updateNodeCountStatus(ctx context.Context, config *scalev1.ScaleLoadConfig, nodeCount int) error {
+	// Retry logic to handle concurrent modifications
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Get fresh copy to avoid conflicts
+		freshConfig := &scalev1.ScaleLoadConfig{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(config), freshConfig); err != nil {
+			return fmt.Errorf("failed to get fresh config for status update: %w", err)
+		}
+
+		// Only update node count, preserve other fields
+		freshConfig.Status.KwokNodeCount = int32(nodeCount)
+		now := metav1.NewTime(time.Now())
+		freshConfig.Status.LastReconcileTime = &now
+
+		// Quick status update with retry
+		if err := r.Status().Update(ctx, freshConfig); err != nil {
+			// If it's a conflict error and we have retries left, try again
+			if strings.Contains(err.Error(), "object has been modified") && attempt < maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond) // Exponential backoff
+				continue
+			}
+			return fmt.Errorf("failed to update node count status after %d attempts: %w", attempt+1, err)
+		}
+
+		return nil // Success
+	}
+
+	return fmt.Errorf("failed to update node count status after %d retries", maxRetries)
+}
+
+// calculateNextReconcileResult returns appropriate reconcile result when skipping full processing
+func (r *ScaleLoadConfigReconciler) calculateNextReconcileResult(config *scalev1.ScaleLoadConfig, nodeCount int) (ctrl.Result, error) {
+	nextReconcile := r.calculateReconcileInterval(config, nodeCount)
+	return ctrl.Result{RequeueAfter: nextReconcile}, nil
+}
 
 // manageNamespacesParallel processes multiple namespaces concurrently for better performance
 func (r *ScaleLoadConfigReconciler) manageNamespacesParallel(ctx context.Context, config *scalev1.ScaleLoadConfig, namespaces []corev1.Namespace) map[string]int {
 	log := r.Log.WithName("parallel-manager")
 
-	// Configure concurrency based on load profile and number of namespaces
+	// Implement smart namespace batching based on cluster size
+	maxNamespacesPerReconcile := r.calculateOptimalBatchSize(len(namespaces))
+	if len(namespaces) > maxNamespacesPerReconcile {
+		log.Info("Applying namespace batching for optimal performance",
+			"totalNamespaces", len(namespaces),
+			"processingThisCycle", maxNamespacesPerReconcile,
+			"batchingStrategy", "performance-optimized")
+		namespaces = namespaces[:maxNamespacesPerReconcile]
+	}
+
+	// Configure concurrency based on API rate capacity and number of namespaces
 	maxConcurrency := r.calculateOptimalConcurrency(config, len(namespaces))
 	log.Info("Starting parallel namespace processing",
 		"namespaces", len(namespaces),
@@ -860,37 +1025,58 @@ func (r *ScaleLoadConfigReconciler) processNamespaceWithResult(ctx context.Conte
 		"resourceCounts", counts,
 		"success", err == nil)
 
+	// Approximate API calls from resource operations (list + create/update/delete per resource type)
+	approxAPICalls := int32(0)
+	for _, c := range counts {
+		approxAPICalls += int32(c)
+	}
 	resultsChan <- namespaceResult{
 		namespace:      namespace.Name,
 		resourceCounts: counts,
-		apiCalls:       0, // TODO: Track API calls per namespace
+		apiCalls:       approxAPICalls,
 		err:            err,
 	}
 }
 
-// calculateOptimalConcurrency determines the optimal number of concurrent goroutines
+// calculateOptimalBatchSize determines optimal namespace batch size for performance
+func (r *ScaleLoadConfigReconciler) calculateOptimalBatchSize(totalNamespaces int) int {
+	// For high performance, process more namespaces per reconcile
+	// but ensure we don't exceed reconcile timeout (5 minutes)
+
+	if totalNamespaces <= 100 {
+		return totalNamespaces // Process all if small
+	} else if totalNamespaces <= 500 {
+		return 150 // Medium batches for medium clusters
+	} else {
+		return 200 // Larger batches for large clusters
+	}
+}
+
+// calculateOptimalConcurrency determines the optimal number of concurrent goroutines based on API rate
 func (r *ScaleLoadConfigReconciler) calculateOptimalConcurrency(config *scalev1.ScaleLoadConfig, namespaceCount int) int {
-	// Base concurrency on load profile
-	var baseConcurrency int
-	switch config.Spec.LoadProfile.Profile {
-	case "development":
-		baseConcurrency = 10 // Conservative for light load
-	case "staging":
-		baseConcurrency = 25 // Moderate parallelism
-	case "extreme":
-		baseConcurrency = 100 // Aggressive parallelism
-	default: // "production"
-		baseConcurrency = 50 // Balanced approach
+	// Conservative concurrency for rate-limited environment to prevent resource conflicts
+	// Lower concurrency reduces conflicts and helps stay within API rate targets
+
+	baseConcurrency := 5 // Start with low base concurrency for rate-limited environment
+
+	// Scale conservatively with namespace count to prevent conflicts
+	if namespaceCount > 50 {
+		baseConcurrency = 8
+	}
+	if namespaceCount > 100 {
+		baseConcurrency = 12
+	}
+	if namespaceCount > 200 {
+		baseConcurrency = 15
 	}
 
-	// Adjust based on number of namespaces
+	// Don't create more goroutines than namespaces
 	if namespaceCount < baseConcurrency {
-		// Don't create more goroutines than namespaces
 		return namespaceCount
 	}
 
-	// Cap maximum concurrency to avoid overwhelming API server
-	maxConcurrency := 100
+	// Cap at conservative maximum to prevent resource conflicts
+	maxConcurrency := 20
 	if baseConcurrency > maxConcurrency {
 		return maxConcurrency
 	}
@@ -908,10 +1094,13 @@ func (r *ScaleLoadConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize metrics
 	r.initializeMetrics()
 
-	// Watch ScaleLoadConfig resources
-	// Build and return the controller
+	// Initialize deletion manager for complex resources
+	r.deletionManager = NewDeletionManager(r)
+
+	// Watch ScaleLoadConfig resources and Node changes for immediate response
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&scalev1.ScaleLoadConfig{}).
+		Watches(&corev1.Node{}, &NodeEventHandler{Client: mgr.GetClient()}).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 1, // Single threaded for simplicity
 		}).
@@ -949,4 +1138,179 @@ func (r *ScaleLoadConfigReconciler) initializeMetrics() {
 
 	// Register metrics
 	prometheus.MustRegister(r.KwokNodeCount, r.GeneratedNamespaces, r.APICallRate, r.ReconcileTime, r.ErrorCount)
+}
+
+// performOrphanCleanup removes resources (especially pods) that are stuck on deleted KWOK nodes
+func (r *ScaleLoadConfigReconciler) performOrphanCleanup(ctx context.Context, config *scalev1.ScaleLoadConfig) error {
+	log := r.Log.WithName("orphan-cleanup")
+
+	// Get all existing KWOK nodes to build a list of valid node names
+	kwokNodes, err := r.getKwokNodes(ctx, config.Spec.KwokNodeSelector)
+	if err != nil {
+		return fmt.Errorf("failed to get KWOK nodes for orphan cleanup: %w", err)
+	}
+
+	validNodeNames := make(map[string]bool)
+	for _, node := range kwokNodes {
+		validNodeNames[node.Name] = true
+	}
+
+	log.V(1).Info("Starting orphan cleanup", "validKwokNodes", len(validNodeNames))
+
+	// Get managed namespaces
+	managedNamespaces, err := r.getManagedNamespaces(ctx, config)
+	if err != nil {
+		return fmt.Errorf("failed to get managed namespaces for orphan cleanup: %w", err)
+	}
+
+	var orphanPodsFound, orphanPodsDeleted int
+
+	// Check each managed namespace for orphaned pods
+	for _, namespace := range managedNamespaces {
+		podList := &corev1.PodList{}
+		listOpts := &client.ListOptions{
+			Namespace: namespace.Name,
+		}
+
+		if err := r.List(ctx, podList, listOpts); err != nil {
+			log.Error(err, "Failed to list pods in namespace", "namespace", namespace.Name)
+			continue
+		}
+
+		for _, pod := range podList.Items {
+			// Check if pod is assigned to a node that no longer exists
+			if pod.Spec.NodeName != "" && !validNodeNames[pod.Spec.NodeName] {
+				orphanPodsFound++
+
+				// Check if this pod was created by sim-operator (has our labels)
+				if labels := pod.Labels; labels != nil {
+					if managedBy, exists := labels["scale.openshift.io/managed-by"]; exists && managedBy == config.Name {
+						log.Info("Force deleting orphaned pod",
+							"namespace", pod.Namespace,
+							"pod", pod.Name,
+							"deletedNode", pod.Spec.NodeName)
+
+						// Force delete the pod immediately
+						gracePeriod := int64(0)
+						deleteOpts := &client.DeleteOptions{
+							GracePeriodSeconds: &gracePeriod,
+						}
+
+						if err := r.Delete(ctx, &pod, deleteOpts); err != nil {
+							log.Error(err, "Failed to force delete orphaned pod",
+								"namespace", pod.Namespace, "pod", pod.Name)
+						} else {
+							orphanPodsDeleted++
+							r.recordAPICall(config, 1) // Count the delete operation
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if orphanPodsFound > 0 {
+		log.Info("Orphan cleanup completed",
+			"orphanPodsFound", orphanPodsFound,
+			"orphanPodsDeleted", orphanPodsDeleted,
+			"validKwokNodes", len(validNodeNames))
+	}
+
+	return nil
+}
+
+// NodeEventHandler handles Node events to trigger ScaleLoadConfig reconciliation
+type NodeEventHandler struct {
+	Client client.Client
+}
+
+// Create handles node creation events
+func (h *NodeEventHandler) Create(ctx context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+	// Only care about KWOK nodes
+	if node, ok := evt.Object.(*corev1.Node); ok {
+		if labels := node.GetLabels(); labels != nil {
+			if nodeType, exists := labels["type"]; exists && nodeType == "kwok" {
+				// Enqueue all ScaleLoadConfigs for reconciliation
+				h.enqueueAllConfigs(ctx, q)
+			}
+		}
+	}
+}
+
+// Update handles node update events
+func (h *NodeEventHandler) Update(ctx context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+	// Check if this affects KWOK nodes
+	if node, ok := evt.ObjectNew.(*corev1.Node); ok {
+		if labels := node.GetLabels(); labels != nil {
+			if nodeType, exists := labels["type"]; exists && nodeType == "kwok" {
+				h.enqueueAllConfigs(ctx, q)
+			}
+		}
+	}
+}
+
+// Delete handles node deletion events
+func (h *NodeEventHandler) Delete(ctx context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+	// Only care about KWOK nodes
+	if node, ok := evt.Object.(*corev1.Node); ok {
+		if labels := node.GetLabels(); labels != nil {
+			if nodeType, exists := labels["type"]; exists && nodeType == "kwok" {
+				// Enqueue all ScaleLoadConfigs for reconciliation
+				h.enqueueAllConfigs(ctx, q)
+			}
+		}
+	}
+}
+
+// Generic handles other events
+func (h *NodeEventHandler) Generic(ctx context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+	// Handle generic events for KWOK nodes
+	if node, ok := evt.Object.(*corev1.Node); ok {
+		if labels := node.GetLabels(); labels != nil {
+			if nodeType, exists := labels["type"]; exists && nodeType == "kwok" {
+				h.enqueueAllConfigs(ctx, q)
+			}
+		}
+	}
+}
+
+// enqueueAllConfigs adds all ScaleLoadConfigs to the reconcile queue so node changes trigger reconciliation for every config.
+func (h *NodeEventHandler) enqueueAllConfigs(ctx context.Context, q workqueue.RateLimitingInterface) {
+	if h.Client == nil {
+		return
+	}
+	configList := &scalev1.ScaleLoadConfigList{}
+	if err := h.Client.List(ctx, configList); err != nil {
+		return
+	}
+	for i := range configList.Items {
+		config := &configList.Items[i]
+		q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: config.Name, Namespace: config.Namespace}})
+	}
+}
+
+// shouldThrottleOperations checks if we're exceeding API rate targets and should slow down
+func (r *ScaleLoadConfigReconciler) shouldThrottleOperations(config *scalev1.ScaleLoadConfig, nodeCount int) bool {
+	now := time.Now()
+
+	// Calculate target rate
+	effectiveRate, _ := r.getEffectiveAPIRate(config, nodeCount)
+
+	// Reset counter every minute
+	if r.lastRateReset.IsZero() || now.Sub(r.lastRateReset) >= time.Minute {
+		r.apiCallsThisMinute = 0
+		r.lastRateReset = now
+		return false // Fresh minute, don't throttle
+	}
+
+	// Check if we're significantly over target (more than 150% of target)
+	if r.apiCallsThisMinute > effectiveRate*3/2 {
+		r.Log.V(1).Info("Throttling operations due to high API rate",
+			"currentRate", r.apiCallsThisMinute,
+			"targetRate", effectiveRate,
+			"overage", r.apiCallsThisMinute-effectiveRate)
+		return true
+	}
+
+	return false
 }

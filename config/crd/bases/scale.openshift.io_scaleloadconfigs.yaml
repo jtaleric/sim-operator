@@ -21,8 +21,8 @@ spec:
     - jsonPath: .status.generatedNamespaces
       name: Namespaces
       type: integer
-    - jsonPath: .spec.loadProfile.profile
-      name: Profile
+    - jsonPath: .spec.loadProfile.namespacesPerNode
+      name: Namespaces/Node
       type: string
     - jsonPath: .spec.enabled
       name: Enabled
@@ -140,18 +140,9 @@ spec:
                   namespacesPerNode:
                     default: "0.6"
                     description: |-
-                      NamespacesPerNode controls namespace density (overrides profile defaults)
+                      NamespacesPerNode controls namespace density
                       Based on must-gather analysis: ~0.6 namespaces per node (72/126)
                     pattern: ^[0-9]+(\.[0-9]+)?$
-                    type: string
-                  profile:
-                    default: production
-                    description: Profile selects predefined load patterns
-                    enum:
-                    - development
-                    - staging
-                    - production
-                    - extreme
                     type: string
                   resourcesPerNamespace:
                     default: 5
@@ -203,6 +194,11 @@ spec:
                   buildConfigs:
                     description: BuildConfigs controls BuildConfig resource patterns
                     properties:
+                      asyncDeletion:
+                        default: true
+                        description: AsyncDeletion enables non-blocking deletion for
+                          complex resources
+                        type: boolean
                       count:
                         default: 3
                         description: Count per namespace
@@ -214,6 +210,24 @@ spec:
                           vs update (0.0-1.0)
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
+                      deletionBatchDelay:
+                        default: 10
+                        description: DeletionBatchDelay controls delay between deletion
+                          batches (seconds)
+                        format: int32
+                        type: integer
+                      deletionBatchSize:
+                        default: 5
+                        description: DeletionBatchSize controls how many resources
+                          to delete per batch
+                        format: int32
+                        type: integer
+                      deletionTimeout:
+                        default: 300
+                        description: DeletionTimeout maximum time to wait for resource
+                          deletion (seconds)
+                        format: int32
+                        type: integer
                       enabled:
                         default: true
                         description: Enabled controls whether this resource type is
@@ -235,6 +249,11 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      safeDeletionEnabled:
+                        default: false
+                        description: SafeDeletionEnabled enables enhanced safety controls
+                          for complex OpenShift resources
+                        type: boolean
                       updateFrequencyMax:
                         default: 600
                         description: UpdateFrequencyMax maximum time between updates
@@ -251,6 +270,11 @@ spec:
                   configMaps:
                     description: ConfigMaps controls ConfigMap resource patterns
                     properties:
+                      asyncDeletion:
+                        default: true
+                        description: AsyncDeletion enables non-blocking deletion for
+                          complex resources
+                        type: boolean
                       count:
                         default: 3
                         description: Count per namespace
@@ -262,6 +286,24 @@ spec:
                           vs update (0.0-1.0)
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
+                      deletionBatchDelay:
+                        default: 10
+                        description: DeletionBatchDelay controls delay between deletion
+                          batches (seconds)
+                        format: int32
+                        type: integer
+                      deletionBatchSize:
+                        default: 5
+                        description: DeletionBatchSize controls how many resources
+                          to delete per batch
+                        format: int32
+                        type: integer
+                      deletionTimeout:
+                        default: 300
+                        description: DeletionTimeout maximum time to wait for resource
+                          deletion (seconds)
+                        format: int32
+                        type: integer
                       enabled:
                         default: true
                         description: Enabled controls whether this resource type is
@@ -283,6 +325,11 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      safeDeletionEnabled:
+                        default: false
+                        description: SafeDeletionEnabled enables enhanced safety controls
+                          for complex OpenShift resources
+                        type: boolean
                       updateFrequencyMax:
                         default: 600
                         description: UpdateFrequencyMax maximum time between updates
@@ -340,6 +387,11 @@ spec:
                   imageStreams:
                     description: ImageStreams controls ImageStream resource patterns
                     properties:
+                      asyncDeletion:
+                        default: true
+                        description: AsyncDeletion enables non-blocking deletion for
+                          complex resources
+                        type: boolean
                       count:
                         default: 3
                         description: Count per namespace
@@ -351,6 +403,24 @@ spec:
                           vs update (0.0-1.0)
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
+                      deletionBatchDelay:
+                        default: 10
+                        description: DeletionBatchDelay controls delay between deletion
+                          batches (seconds)
+                        format: int32
+                        type: integer
+                      deletionBatchSize:
+                        default: 5
+                        description: DeletionBatchSize controls how many resources
+                          to delete per batch
+                        format: int32
+                        type: integer
+                      deletionTimeout:
+                        default: 300
+                        description: DeletionTimeout maximum time to wait for resource
+                          deletion (seconds)
+                        format: int32
+                        type: integer
                       enabled:
                         default: true
                         description: Enabled controls whether this resource type is
@@ -372,6 +442,11 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      safeDeletionEnabled:
+                        default: false
+                        description: SafeDeletionEnabled enables enhanced safety controls
+                          for complex OpenShift resources
+                        type: boolean
                       updateFrequencyMax:
                         default: 600
                         description: UpdateFrequencyMax maximum time between updates
@@ -551,6 +626,11 @@ spec:
                   routes:
                     description: Routes controls Route resource patterns
                     properties:
+                      asyncDeletion:
+                        default: true
+                        description: AsyncDeletion enables non-blocking deletion for
+                          complex resources
+                        type: boolean
                       count:
                         default: 3
                         description: Count per namespace
@@ -562,6 +642,24 @@ spec:
                           vs update (0.0-1.0)
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
+                      deletionBatchDelay:
+                        default: 10
+                        description: DeletionBatchDelay controls delay between deletion
+                          batches (seconds)
+                        format: int32
+                        type: integer
+                      deletionBatchSize:
+                        default: 5
+                        description: DeletionBatchSize controls how many resources
+                          to delete per batch
+                        format: int32
+                        type: integer
+                      deletionTimeout:
+                        default: 300
+                        description: DeletionTimeout maximum time to wait for resource
+                          deletion (seconds)
+                        format: int32
+                        type: integer
                       enabled:
                         default: true
                         description: Enabled controls whether this resource type is
@@ -583,6 +681,11 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      safeDeletionEnabled:
+                        default: false
+                        description: SafeDeletionEnabled enables enhanced safety controls
+                          for complex OpenShift resources
+                        type: boolean
                       updateFrequencyMax:
                         default: 600
                         description: UpdateFrequencyMax maximum time between updates
@@ -599,6 +702,11 @@ spec:
                   secrets:
                     description: Secrets controls Secret resource patterns
                     properties:
+                      asyncDeletion:
+                        default: true
+                        description: AsyncDeletion enables non-blocking deletion for
+                          complex resources
+                        type: boolean
                       count:
                         default: 3
                         description: Count per namespace
@@ -610,6 +718,24 @@ spec:
                           vs update (0.0-1.0)
                         pattern: ^(0(\.[0-9]+)?|1(\.0+)?)$
                         type: string
+                      deletionBatchDelay:
+                        default: 10
+                        description: DeletionBatchDelay controls delay between deletion
+                          batches (seconds)
+                        format: int32
+                        type: integer
+                      deletionBatchSize:
+                        default: 5
+                        description: DeletionBatchSize controls how many resources
+                          to delete per batch
+                        format: int32
+                        type: integer
+                      deletionTimeout:
+                        default: 300
+                        description: DeletionTimeout maximum time to wait for resource
+                          deletion (seconds)
+                        format: int32
+                        type: integer
                       enabled:
                         default: true
                         description: Enabled controls whether this resource type is
@@ -631,6 +757,11 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      safeDeletionEnabled:
+                        default: false
+                        description: SafeDeletionEnabled enables enhanced safety controls
+                          for complex OpenShift resources
+                        type: boolean
                       updateFrequencyMax:
                         default: 600
                         description: UpdateFrequencyMax maximum time between updates
@@ -726,6 +857,40 @@ spec:
                   - type
                   type: object
                 type: array
+              deletionStatus:
+                description: DeletionStatus tracks ongoing deletion operations for
+                  complex resources
+                properties:
+                  deletionErrors:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: DeletionErrors recent deletion errors per resource
+                      type
+                    type: object
+                  inFlightDeletions:
+                    additionalProperties:
+                      format: int32
+                      type: integer
+                    description: InFlightDeletions count of deletions currently in
+                      progress
+                    type: object
+                  lastDeletionBatch:
+                    additionalProperties:
+                      format: date-time
+                      type: string
+                    description: LastDeletionBatch timestamp of last deletion batch
+                      per resource type
+                    type: object
+                  pendingDeletions:
+                    additionalProperties:
+                      format: int32
+                      type: integer
+                    description: PendingDeletions resources marked for deletion but
+                      not yet removed
+                    type: object
+                type: object
               generatedNamespaces:
                 description: GeneratedNamespaces is the current count of generated
                   namespaces

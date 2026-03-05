@@ -12,7 +12,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRateStatic: 5000      # ❌ This should be rejected
     apiCallRatePerNode: 100      # ❌ Both fields set
   namespaceConfig:
@@ -35,7 +35,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRate: 20              # ❌ Deprecated field
     apiCallRateStatic: 5000      # ❌ This should be rejected
     apiCallRatePerNode: 100      # ❌ All three fields set
@@ -59,7 +59,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRate: 20              # ❌ Deprecated field
     apiCallRateStatic: 5000      # ❌ Both deprecated and static set
   namespaceConfig:
@@ -82,7 +82,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRate: 20              # ❌ Deprecated field
     apiCallRatePerNode: 100      # ❌ Both deprecated and per-node set
   namespaceConfig:
@@ -105,7 +105,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRateStatic: -1000     # ❌ Negative value
   namespaceConfig:
     namespacePrefix: "test-"
@@ -127,7 +127,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRatePerNode: 0        # ❌ Zero value
   namespaceConfig:
     namespacePrefix: "test-"
@@ -149,7 +149,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRate: -5              # ❌ Negative deprecated field
   namespaceConfig:
     namespacePrefix: "test-"
