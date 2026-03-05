@@ -9,7 +9,7 @@ The sim Operator is a sophisticated OpenShift operator designed to generate real
 ### 🎯 **Realistic Load Patterns**
 - Based on analysis of 120+ node production OpenShift clusters
 - Generates authentic resource density
-- Creates realistic resource types: ConfigMaps, Secrets, Routes, ImageStreams, BuildConfigs
+- Creates realistic resource types: ConfigMaps, Secrets, Routes, ImageStreams, BuildConfigs, Pods, Events
 - Implements production-like API call patterns and frequencies
 
 ### 🌐 **Node Annotation Simulation**
@@ -34,8 +34,8 @@ Based on must-gather analysis of production clusters:
 
 ```
 Target Namespaces = ceil(KWOK_Node_Count × Namespaces_Per_Node)
-Resources Per Namespace = 5 (ConfigMap + Secret + Route + ImageStream + BuildConfig)
-API Call Rate = 20 calls/minute/node (configurable)
+Resources Per Namespace = 3-5 per resource type (configurable, default 3 per type)
+API Call Rate = 20 calls/minute/node (configurable via apiCallRatePerNode)
 ```
 
 ## Maximum Field Quick Reference
@@ -163,8 +163,6 @@ loadProfile:
   # Option 2: Per-node rate - scales with KWOK node count  
   apiCallRatePerNode: 20
   
-  # Option 3: Deprecated - treat as per-node rate
-  apiCallRate: 20
 ```
 
 ### Rate Limiting Behavior
@@ -222,7 +220,6 @@ loadProfile:
   resourcesPerNamespace: 15  # Total resources created per namespace
   
   # API rate limiting (choose one method)
-  apiCallRate: 20           # DEPRECATED: Use apiCallRatePerNode instead
   apiCallRatePerNode: 50    # API calls per minute per node (scales with node count)
   # OR
   # apiCallRateStatic: 2000 # Fixed API calls per minute (doesn't scale)
@@ -362,31 +359,46 @@ resourceChurn:
     maximum: 50                  # Maximum total secrets across all namespaces (0 = no limit)
 ```
 
-##### Route Churn (Ingress Configuration) - **DISABLED FOR STABILITY**
+##### Route Churn (Ingress Configuration)
 ```yaml
 resourceChurn:
   routes:
-    enabled: false               # DISABLED - Can cause cluster instability
-    count: 0
+    enabled: true
+    count: 3                     # Default count per namespace
+    updateFrequencyMin: 120      # 2 minutes minimum
+    updateFrequencyMax: 600      # 10 minutes maximum
+    deleteRecreateChance: "0.1"  # 10% recreation rate
+    namespaceInterval: 1         # Update routes in every namespace
+    maximum: 0                   # No cluster-wide limit (0 = unlimited)
 ```
 
-##### ImageStream Churn (Container Image Management) - **DISABLED FOR STABILITY**
+##### ImageStream Churn (Container Image Management)
 ```yaml
 resourceChurn:
   imageStreams:
-    enabled: false               # DISABLED - Can cause cluster instability
-    count: 0
+    enabled: true
+    count: 3                     # Default count per namespace
+    updateFrequencyMin: 120      # 2 minutes minimum
+    updateFrequencyMax: 600      # 10 minutes maximum
+    deleteRecreateChance: "0.1"  # 10% recreation rate
+    namespaceInterval: 1         # Update imageStreams in every namespace
+    maximum: 0                   # No cluster-wide limit (0 = unlimited)
 ```
 
-##### BuildConfig Churn (CI/CD Pipeline Configuration) - **DISABLED FOR STABILITY**
+##### BuildConfig Churn (CI/CD Pipeline Configuration)
 ```yaml
 resourceChurn:
   buildConfigs:
-    enabled: false               # DISABLED - Can cause cluster instability
-    count: 0
+    enabled: true
+    count: 3                     # Default count per namespace
+    updateFrequencyMin: 120      # 2 minutes minimum
+    updateFrequencyMax: 600      # 10 minutes maximum
+    deleteRecreateChance: "0.1"  # 10% recreation rate
+    namespaceInterval: 1         # Update buildConfigs in every namespace
+    maximum: 0                   # No cluster-wide limit (0 = unlimited)
 ```
 
-> **⚠️ Warning**: Routes, ImageStreams, and BuildConfigs are disabled by default as they can cause cluster instability during high-scale load testing. Focus on pods, configMaps, secrets, and events for stable load generation.
+> **ℹ️ Note**: All resource types now use consistent defaults: enabled=true, count=3, updateFrequency 120-600 seconds, and support cluster-wide maximum limits.
 
 ##### Event Generation (Cluster Activity Simulation)
 ```yaml

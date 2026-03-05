@@ -38,16 +38,16 @@ spec:
   resourceChurn:
     configMaps:
       enabled: true
-      count: 1
-      updateFrequencyMin: 1800  # 30 minutes
-      updateFrequencyMax: 7200  # 2 hours
+      count: 2                  # Reduced from default 3
+      updateFrequencyMin: 300   # 5 minutes (faster than production for dev testing)
+      updateFrequencyMax: 1200  # 20 minutes
       deleteRecreateChance: "0.05"
     
     secrets:
       enabled: true
-      count: 1
-      updateFrequencyMin: 3600  # 1 hour
-      updateFrequencyMax: 14400 # 4 hours
+      count: 2                  # Reduced from default 3
+      updateFrequencyMin: 600   # 10 minutes
+      updateFrequencyMax: 2400  # 40 minutes
       deleteRecreateChance: "0.02"
     
     routes:
@@ -55,9 +55,9 @@ spec:
     
     imageStreams:
       enabled: true
-      count: 1
-      updateFrequencyMin: 7200  # 2 hours
-      updateFrequencyMax: 28800 # 8 hours
+      count: 1                  # Minimal for development
+      updateFrequencyMin: 1800  # 30 minutes
+      updateFrequencyMax: 7200  # 2 hours
       deleteRecreateChance: "0.01"
     
     buildConfigs:

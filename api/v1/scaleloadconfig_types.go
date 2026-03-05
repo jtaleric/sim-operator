@@ -50,10 +50,6 @@ type LoadProfile struct {
 	// +kubebuilder:default=5
 	ResourcesPerNamespace *int32 `json:"resourcesPerNamespace,omitempty"`
 
-	// APICallRate controls the frequency of API operations (calls per minute per node)
-	// DEPRECATED: Use APICallRatePerNode for clarity. Will be removed in future versions.
-	// +kubebuilder:default=20
-	APICallRate *int32 `json:"apiCallRate,omitempty"`
 
 	// APICallRateStatic sets a fixed total API call rate (calls per minute total)
 	// Takes precedence over APICallRatePerNode if both are set
@@ -146,9 +142,11 @@ type ResourceChurnConfig struct {
 // ResourceTypeConfig defines behavior for specific resource types
 type ResourceTypeConfig struct {
 	// Enabled controls whether this resource type is generated
+	// +kubebuilder:default=true
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Count per namespace
+	// +kubebuilder:default=3
 	Count int32 `json:"count,omitempty"`
 
 	// Maximum total resources of this type across all namespaces
@@ -164,11 +162,11 @@ type ResourceTypeConfig struct {
 	NamespaceInterval int32 `json:"namespaceInterval,omitempty"`
 
 	// UpdateFrequencyMin minimum time between updates (seconds)
-	// +kubebuilder:default=300
+	// +kubebuilder:default=120
 	UpdateFrequencyMin int32 `json:"updateFrequencyMin,omitempty"`
 
 	// UpdateFrequencyMax maximum time between updates (seconds)
-	// +kubebuilder:default=1800
+	// +kubebuilder:default=600
 	UpdateFrequencyMax int32 `json:"updateFrequencyMax,omitempty"`
 
 	// DeleteRecreateChance probability of delete+recreate vs update (0.0-1.0)
@@ -487,14 +485,10 @@ func (r *ScaleLoadConfig) validateAPIRateConfiguration() error {
 		setFields = append(setFields, "apiCallRatePerNode")
 	}
 
-	if loadProfile.APICallRate != nil {
-		fieldsSet++
-		setFields = append(setFields, "apiCallRate")
-	}
 
 	// Allow only one API rate field to be set
 	if fieldsSet > 1 {
-		return fmt.Errorf("only one API rate limiting approach can be specified, found: %v. Choose either 'apiCallRateStatic' for fixed total rate or 'apiCallRatePerNode' for node-scaling rate. Note: 'apiCallRate' is deprecated, use 'apiCallRatePerNode' instead", setFields)
+		return fmt.Errorf("only one API rate limiting approach can be specified, found: %v. Choose either 'apiCallRateStatic' for fixed total rate or 'apiCallRatePerNode' for node-scaling rate", setFields)
 	}
 
 	// Validate positive values
@@ -506,9 +500,6 @@ func (r *ScaleLoadConfig) validateAPIRateConfiguration() error {
 		return fmt.Errorf("apiCallRatePerNode must be positive, got %d", *loadProfile.APICallRatePerNode)
 	}
 
-	if loadProfile.APICallRate != nil && *loadProfile.APICallRate <= 0 {
-		return fmt.Errorf("apiCallRate must be positive, got %d", *loadProfile.APICallRate)
-	}
 
 	return nil
 }
