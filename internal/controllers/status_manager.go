@@ -53,9 +53,8 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 	}
 
 	// Only log status updates every 10 reconciles to reduce spam
-	static := struct{ counter int }{}
-	static.counter++
-	if static.counter%10 == 0 {
+	r.statusLogCounter++
+	if r.statusLogCounter%10 == 0 {
 		log.Info("Status updated",
 			"pods", latestConfig.Status.TotalResources.Pods,
 			"configMaps", latestConfig.Status.TotalResources.ConfigMaps,
@@ -64,6 +63,11 @@ func (r *ScaleLoadConfigReconciler) updateStatus(ctx context.Context, config *sc
 
 	// Update conditions
 	latestConfig.Status.Conditions = r.updateConditions(latestConfig, kwokNodeCount)
+
+	// Update deletion status if deletion manager is available
+	if r.deletionManager != nil {
+		latestConfig.Status.DeletionStatus = r.deletionManager.GetDeletionStatus()
+	}
 
 	// Update Prometheus metrics
 	r.updatePrometheusMetrics(latestConfig)

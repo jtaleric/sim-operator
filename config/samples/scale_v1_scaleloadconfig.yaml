@@ -1,0 +1,270 @@
+apiVersion: scale.openshift.io/v1
+kind: ScaleLoadConfig
+metadata:
+  name: scaleloadconfig-sample
+spec:
+  enabled: true
+  
+  # Target KWOK nodes for safe simulation
+  kwokNodeSelector:
+    type: "kwok"
+  
+  # Load profile configuration
+  loadProfile:
+    # Namespace density - how many namespaces per node
+    # Based on must-gather analysis: ~0.6 namespaces per node (72/126)
+    namespacesPerNode: "0.5"
+    
+    # API Rate Control - choose ONE approach (REQUIRED):
+    
+    # Option 1: Static rate (fixed total regardless of cluster size)
+    # Good for: Testing specific API server limits, predictable load
+    # apiCallRateStatic: 5000  # 5000 calls/minute total across entire cluster
+    
+    # Option 2: Per-node rate (scales with cluster size) - RECOMMENDED
+    # Good for: Realistic workload simulation, cluster scaling tests
+    # Reconcile frequency and concurrency are auto-calculated from this rate
+    apiCallRatePerNode: 50     # 50 calls per minute per node
+  
+  # Namespace configuration
+  namespaceConfig:
+    namespacePrefix: "sim-workload-"
+    labels:
+      scale.openshift.io/load-test: "true"
+      team: "sre"
+    annotations:
+      scale.openshift.io/description: "Load testing simulation namespace"
+    
+  # Node annotation churn - simulates networking and machine config updates
+  annotationChurn:
+    enabled: true                   # Enable node annotation simulation
+    networkingAnnotations: true     # Simulate OVN/networking annotation changes
+    machineConfigAnnotations: true  # Simulate machine config annotation changes
+    updateIntervalMin: 600          # 10 minutes minimum between updates
+    updateIntervalMax: 1800         # 30 minutes maximum between updates
+  
+  # Resource churn configuration - complex resources include deletion batch controls
+  resourceChurn:
+    # Pod workloads - primary simulation focus
+    pods:
+      enabled: true
+      count: 20                     # Pods per namespace
+      maximum: 1000                 # Global limit across all namespaces
+      namespaceInterval: 1          # Create pods in every namespace
+      
+      # Update patterns
+      updateFrequencyMin: 120       # 2 minutes minimum (frequent updates)
+      updateFrequencyMax: 300       # 5 minutes maximum
+      deleteRecreateChance: "0.3"   # 30% chance of delete+recreate vs update
+      
+      # KWOK node scheduling
+      tolerateKwokTaint: true       # Allow scheduling on KWOK nodes
+      nodeAffinityStrategy: "round-robin"  # Options: "round-robin", "random", "sticky"
+      
+      # Diverse workload types for realistic simulation
+      workloadTypes:
+      - name: "web-frontend"
+        weight: 30                  # 30% of pods
+        resources:
+          cpuRequest: "100m"
+          cpuLimit: "500m"
+          memoryRequest: "128Mi"
+          memoryLimit: "256Mi"
+        image: "registry.redhat.io/ubi8/ubi-minimal:latest"
+        restartPolicy: "Always"     # Options: "Always", "OnFailure", "Never"
+        labels:
+          app: "web-frontend"
+          tier: "frontend"
+        annotations:
+          monitoring: "enabled"
+          
+      - name: "api-backend"
+        weight: 25                  # 25% of pods
+        resources:
+          cpuRequest: "200m"
+          cpuLimit: "1000m"
+          memoryRequest: "256Mi"
+          memoryLimit: "512Mi"
+        image: "registry.redhat.io/ubi8/ubi-minimal:latest"
+        restartPolicy: "Always"
+        labels:
+          app: "api-backend"
+          tier: "backend"
+          
+      - name: "worker-queue"
+        weight: 20                  # 20% of pods
+        resources:
+          cpuRequest: "150m"
+          cpuLimit: "300m"
+          memoryRequest: "192Mi"
+          memoryLimit: "384Mi"
+        image: "registry.redhat.io/ubi8/ubi-minimal:latest"
+        labels:
+          app: "worker"
+          tier: "worker"
+          
+      - name: "microservice"
+        weight: 15                  # 15% of pods
+        resources:
+          cpuRequest: "50m"
+          cpuLimit: "200m"
+          memoryRequest: "64Mi"
+          memoryLimit: "128Mi"
+        image: "registry.redhat.io/ubi8/ubi-minimal:latest"
+        labels:
+          app: "microservice"
+          tier: "service"
+          
+      - name: "batch-job"
+        weight: 10                  # 10% of pods
+        resources:
+          cpuRequest: "500m"
+          cpuLimit: "2000m"
+          memoryRequest: "512Mi"
+          memoryLimit: "1Gi"
+        image: "registry.redhat.io/ubi8/ubi-minimal:latest"
+        restartPolicy: "OnFailure"  # Different restart policy for batch jobs
+        labels:
+          app: "batch-processor"
+          tier: "batch"
+    
+    # ConfigMaps - application configuration simulation
+    configMaps:
+      enabled: true
+      count: 5                      # ConfigMaps per namespace
+      maximum: 200                  # Global limit across all namespaces
+      namespaceInterval: 1          # Create in every namespace
+      updateFrequencyMin: 900       # 15 minutes
+      updateFrequencyMax: 3600      # 1 hour
+      deleteRecreateChance: "0.05"  # 5% recreation chance
+      
+      # Deletion controls for API server safety
+      deletionBatchSize: 8          # Delete 8 configmaps at a time
+      deletionBatchDelay: 10        # Wait 10 seconds between batches
+      deletionTimeout: 300          # 5 minute timeout
+      asyncDeletion: true
+    
+    # Secrets - credential and sensitive data simulation
+    secrets:
+      enabled: true
+      count: 3                      # Secrets per namespace
+      maximum: 150                  # Global limit across all namespaces
+      updateFrequencyMin: 1800      # 30 minutes (security rotations)
+      updateFrequencyMax: 7200      # 2 hours
+      deleteRecreateChance: "0.02"  # 2% recreation chance
+      
+      # Conservative deletion for sensitive resources
+      deletionBatchSize: 3          # Delete 3 secrets at a time
+      deletionBatchDelay: 15        # Wait 15 seconds between batches
+      deletionTimeout: 300
+      asyncDeletion: true
+    
+    # Routes - OpenShift ingress simulation (DISABLED by default for API safety)
+    routes:
+      enabled: false                # Set to true to enable route simulation
+      count: 2                      # Routes per namespace
+      maximum: 50                   # Global limit across all namespaces
+      updateFrequencyMin: 1800      # 30 minutes
+      updateFrequencyMax: 3600      # 1 hour
+      deleteRecreateChance: "0.05"
+      
+      # Enhanced deletion controls for complex OpenShift resources
+      safeDeletionEnabled: true     # Enable enhanced safety controls
+      deletionBatchSize: 2          # Delete only 2 routes at a time
+      deletionBatchDelay: 30        # Wait 30 seconds between batches
+      deletionTimeout: 900          # 15 minute timeout
+      asyncDeletion: true           # Use async deletion to prevent API blocking
+    
+    # ImageStreams - container image management simulation (DISABLED by default)
+    imageStreams:
+      enabled: false                # Set to true to enable imagestream simulation
+      count: 1                      # ImageStreams per namespace
+      maximum: 20                   # Very conservative global limit
+      updateFrequencyMin: 3600      # 1 hour
+      updateFrequencyMax: 7200      # 2 hours
+      deleteRecreateChance: "0.02"
+      
+      # Maximum safety for image registry operations
+      safeDeletionEnabled: true
+      deletionBatchSize: 1          # Delete only 1 at a time
+      deletionBatchDelay: 60        # Wait 1 minute between deletions
+      deletionTimeout: 1800         # 30 minute timeout
+      asyncDeletion: true
+    
+    # BuildConfigs - CI/CD build simulation (DISABLED by default)
+    buildConfigs:
+      enabled: false                # Set to true to enable buildconfig simulation
+      count: 1                      # BuildConfigs per namespace
+      maximum: 10                   # Very conservative global limit
+      updateFrequencyMin: 7200      # 2 hours
+      updateFrequencyMax: 14400     # 4 hours
+      deleteRecreateChance: "0.01"  # Very rare recreation
+      
+      # Extreme safety for build operations
+      safeDeletionEnabled: true
+      deletionBatchSize: 1          # Delete only 1 at a time
+      deletionBatchDelay: 120       # Wait 2 minutes between deletions
+      deletionTimeout: 2400         # 40 minute timeout
+      asyncDeletion: true
+    
+    # Namespace lifecycle simulation
+    namespaces:
+      enabled: true                 # Set to false to disable namespace churn
+      churnPercentage: 5            # Churn 5% of namespaces per cycle
+      churnIntervalSeconds: 300     # Every 5 minutes
+      preserveOldestNamespaces: 10  # Keep 10 oldest namespaces stable
+      maximum: 100                  # Maximum namespaces to create (0 = unlimited)
+    
+    # Events - cluster event simulation for monitoring/alerting testing
+    events:
+      enabled: true
+      eventsPerNodePerHour: 50      # Event generation rate
+      
+      # Custom event types (optional - uses defaults if omitted)
+      eventTypes:
+      # Normal operational events (80% of events)
+      - type: "Normal"
+        reason: "Scheduled"
+        message: "Successfully assigned pod to node"
+        weight: 25
+      - type: "Normal"
+        reason: "Started"
+        message: "Started container successfully"
+        weight: 20
+      - type: "Normal"
+        reason: "Pulled"
+        message: "Container image pulled successfully"
+        weight: 18
+      - type: "Normal"
+        reason: "Created"
+        message: "Created container"
+        weight: 15
+      - type: "Normal"
+        reason: "ScalingReplicaSet"
+        message: "Scaled up replica set"
+        weight: 8
+      - type: "Normal"
+        reason: "SuccessfulCreate"
+        message: "Created pod successfully"
+        weight: 6
+      
+      # Warning events (20% of events) - realistic failure scenarios
+      - type: "Warning"
+        reason: "BackOff"
+        message: "Back-off restarting failed container"
+        weight: 4
+      - type: "Warning"
+        reason: "FailedMount"
+        message: "Unable to attach or mount volumes"
+        weight: 2
+      - type: "Warning"
+        reason: "FailedScheduling"
+        message: "Failed to schedule pod due to resource constraints"
+        weight: 2
+  
+  # Cleanup configuration
+  cleanupConfig:
+    enabled: true                   # Enable cleanup when KWOK nodes are removed
+    gracefulDeletes: true           # Use graceful deletion (recommended)
+    cleanupDelaySeconds: 30         # Wait before starting cleanup
+    orphanCleanup: true             # Remove resources for non-existent nodes

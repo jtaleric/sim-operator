@@ -12,7 +12,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRateStatic: 5000      # ✅ Only static rate
   namespaceConfig:
     namespacePrefix: "test-"
@@ -36,7 +36,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"
+    namespacesPerNode: "0.6"
     apiCallRatePerNode: 100      # ✅ Only per-node rate
   namespaceConfig:
     namespacePrefix: "test-"
@@ -60,7 +60,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "production"        # ✅ No rate fields, uses defaults (20 calls/min/node)
+    namespacesPerNode: "0.6"        # ✅ No rate fields, uses defaults (20 calls/min/node)
   namespaceConfig:
     namespacePrefix: "test-"
   annotationChurn:
@@ -83,7 +83,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "extreme"
+    namespacesPerNode: "1.0"
     apiCallRateStatic: 25000     # ✅ High static rate for API server stress testing
   namespaceConfig:
     namespacePrefix: "stress-"
@@ -107,7 +107,7 @@ spec:
   kwokNodeSelector:
     type: "kwok"
   loadProfile:
-    profile: "extreme"
+    namespacesPerNode: "1.0"
     apiCallRatePerNode: 500      # ✅ High per-node rate (500 nodes = 250k calls/min)
   namespaceConfig:
     namespacePrefix: "large-"
